@@ -245,23 +245,57 @@ class WebViewContainer: NSView {
         webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
         addSubview(webView)
 
-        relayoutRevealWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.webView.superview === self else { return }
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.webView.animator().alphaValue = 1
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
-            }
+        revealGeneration += 1
+        let generation = revealGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.revealWhenLayoutSettles(generation: generation, attempt: 0, lastSignature: nil, stableCount: 0)
         }
-        relayoutRevealWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
     }
 
-    private var relayoutRevealWork: DispatchWorkItem?
+    private var revealGeneration = 0
+
+    /// Polls a cheap layout signature (positions of the main page landmarks) and only
+    /// fades the page in once it has stopped moving, so the relayout is never visible.
+    private func revealWhenLayoutSettles(generation: Int, attempt: Int, lastSignature: String?, stableCount: Int) {
+        guard generation == revealGeneration, webView.superview === self else { return }
+        webView.evaluateJavaScript(Self.layoutSignatureScript) { [weak self] result, _ in
+            guard let self = self, generation == self.revealGeneration else { return }
+            let signature = result as? String ?? ""
+            let stable = signature == lastSignature ? stableCount + 1 : 0
+            // Stable for 3 consecutive frames (~120 ms), or give up after ~900 ms.
+            if stable >= 3 || attempt >= 22 {
+                self.fadeInWebView()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+                    self.revealWhenLayoutSettles(generation: generation, attempt: attempt + 1, lastSignature: signature, stableCount: stable)
+                }
+            }
+        }
+    }
+
+    private func fadeInWebView() {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            webView.animator().alphaValue = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+        }
+    }
+
+    static let layoutSignatureScript = #"""
+    (function() {
+        var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container'];
+        var out = [window.innerWidth, window.innerHeight];
+        sel.forEach(function(s) {
+            var el = document.querySelector(s);
+            if (el) { var r = el.getBoundingClientRect(); out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)); }
+        });
+        return out.join(',');
+    })();
+    """#
+
 
     static let freezeLayoutScript = #"""
     (function() {

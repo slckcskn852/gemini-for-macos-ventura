@@ -17,6 +17,7 @@ enum UserScripts {
     static func createAllScripts() -> [WKUserScript] {
         var scripts: [WKUserScript] = [
             createIMEFixScript(),
+            WKUserScript(source: hideGetAppSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: responseWatcherSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         ]
 
@@ -47,6 +48,34 @@ enum UserScripts {
     }
 
     // MARK: - Script Sources
+
+    /// Hides Gemini's "Get App" promo buttons — we already are the app.
+    private static let hideGetAppSource = """
+    (function() {
+        'use strict';
+        function hide() {
+            document.querySelectorAll('a, button, [role="button"], [role="menuitem"]').forEach(function(el) {
+                if (el.dataset.gdHidden) { return; }
+                const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                const href = (el.getAttribute('href') || '').toLowerCase();
+                if (text === 'get app' || text === 'get the app' || label === 'get app' ||
+                    label === 'get the app' || href.indexOf('gemini.google/mac') !== -1 ||
+                    href.indexOf('/download') !== -1 && text.indexOf('app') !== -1) {
+                    el.dataset.gdHidden = '1';
+                    el.style.setProperty('display', 'none', 'important');
+                }
+            });
+        }
+        hide();
+        let pending = false;
+        new MutationObserver(function() {
+            if (pending) { return; }
+            pending = true;
+            requestAnimationFrame(function() { pending = false; hide(); });
+        }).observe(document.documentElement, { childList: true, subtree: true });
+    })();
+    """
 
     /// Watches for Gemini finishing a response (the "Stop response" button
     /// disappearing) and tells the native side so it can post a notification.

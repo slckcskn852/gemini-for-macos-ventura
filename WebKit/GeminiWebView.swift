@@ -236,8 +236,47 @@ class WebViewContainer: NSView {
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
+
+        // Moving the shared web view between windows forces a relayout (and Quick Chat
+        // closes the sidebar / narrows the column). Hide it and freeze Gemini's own
+        // layout transitions so the user sees one clean fade instead of the jumps.
+        webView.wantsLayer = true
+        webView.alphaValue = 0
+        webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
         addSubview(webView)
+
+        relayoutRevealWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.webView.superview === self else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.webView.animator().alphaValue = 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+            }
+        }
+        relayoutRevealWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
     }
+
+    private var relayoutRevealWork: DispatchWorkItem?
+
+    static let freezeLayoutScript = #"""
+    (function() {
+        if (!document.getElementById('gd-noanim-style')) {
+            var st = document.createElement('style');
+            st.id = 'gd-noanim-style';
+            st.textContent = 'html.gd-noanim .mat-drawer, html.gd-noanim .mat-drawer-content, html.gd-noanim .mat-drawer-backdrop,' +
+              'html.gd-noanim bard-sidenav, html.gd-noanim bard-sidenav *, html.gd-noanim side-navigation-v2, html.gd-noanim side-navigation-v2 *,' +
+              'html.gd-noanim chat-window, html.gd-noanim .conversation-container, html.gd-noanim input-container,' +
+              'html.gd-noanim user-query, html.gd-noanim model-response { transition: none !important; animation: none !important; }';
+            (document.head || document.documentElement).appendChild(st);
+        }
+        document.documentElement.classList.add('gd-noanim');
+    })();
+    """#
 }
 
 

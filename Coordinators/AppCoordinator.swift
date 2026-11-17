@@ -204,7 +204,7 @@ final class AppCoordinator: ObservableObject {
                 positionChatBar(bar, position: position)
             }
             NSApp.activate(ignoringOtherApps: true)
-            bar.makeKeyAndOrderFront(nil)
+            animateIn(bar)
             bar.checkAndAdjustSize()
             return
         }
@@ -223,7 +223,7 @@ final class AppCoordinator: ObservableObject {
         positionChatBar(bar, position: position)
 
         NSApp.activate(ignoringOtherApps: true)
-        bar.makeKeyAndOrderFront(nil)
+        animateIn(bar)
         chatBar = bar
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { bar.checkAndAdjustSize() }
     }
@@ -260,6 +260,33 @@ final class AppCoordinator: ObservableObject {
         chatBar?.orderOut(nil)
     }
 
+    /// Fades out Quick Chat (used for the toggle shortcut).
+    func hideChatBarAnimated() {
+        guard let bar = chatBar, bar.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            bar.animator().alphaValue = 0
+        }, completionHandler: {
+            bar.orderOut(nil)
+            bar.alphaValue = 1
+        })
+    }
+
+    /// Spotlight-style entrance: fade in while dropping a few points into place.
+    private func animateIn(_ window: NSWindow, offset: CGFloat = 10) {
+        let target = window.frame
+        window.alphaValue = 0
+        window.setFrame(target.offsetBy(dx: 0, dy: offset), display: false)
+        window.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
+            window.animator().alphaValue = 1
+            window.animator().setFrame(target, display: true)
+        }
+    }
+
     func closeMainWindow() {
         // Find and hide the main window
         for window in NSApp.windows {
@@ -273,7 +300,7 @@ final class AppCoordinator: ObservableObject {
 
     func toggleChatBar() {
         if let bar = chatBar, bar.isVisible {
-            hideChatBar()
+            hideChatBarAnimated()
         } else {
             showChatBar()
         }
@@ -307,7 +334,11 @@ final class AppCoordinator: ObservableObject {
             if let screen = targetScreen {
                 centerWindow(window, on: screen)
             }
-            window.makeKeyAndOrderFront(nil)
+            if window.isVisible {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                animateIn(window, offset: 0)
+            }
         } else if let openWindowAction = openWindowAction {
             // Window doesn't exist yet - use SwiftUI openWindow to create it
             openWindowAction("main")

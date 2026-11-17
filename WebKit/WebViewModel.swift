@@ -34,6 +34,7 @@ final class WebViewModel: ObservableObject {
     // MARK: - Public Properties
 
     let wkWebView: WKWebView
+    var onPageLoaded: (() -> Void)?
     @Published private(set) var canGoBack: Bool = false
     @Published private(set) var canGoForward: Bool = false
     @Published private(set) var isAtHome: Bool = true
@@ -45,6 +46,7 @@ final class WebViewModel: ObservableObject {
     private var forwardObserver: NSKeyValueObservation?
     private var urlObserver: NSKeyValueObservation?
     private var loadingObserver: NSKeyValueObservation?
+    private var lastBackgroundedState: Bool?
     private let consoleLogHandler = ConsoleLogHandler()
 
     // MARK: - Initialization
@@ -58,13 +60,13 @@ final class WebViewModel: ObservableObject {
     // MARK: - Navigation
 
     func loadHome() {
-        isAtHome = true
-        canGoBack = false
+        if !isAtHome { isAtHome = true }
+        if canGoBack { canGoBack = false }
         wkWebView.load(URLRequest(url: Self.geminiURL))
     }
 
     func goBack() {
-        isAtHome = false
+        if isAtHome { isAtHome = false }
         wkWebView.goBack()
     }
 
@@ -106,6 +108,45 @@ final class WebViewModel: ObservableObject {
         guard wkWebView.customUserAgent != newUA else { return }
         wkWebView.customUserAgent = newUA
         wkWebView.reload()
+    }
+
+    // MARK: - Lifecycle Power Management
+
+    private static let pauseAnimationsScript = """
+        (function() {
+            if (!document.getElementById('gd-bg-pause')) {
+                var root = document.head || document.documentElement;
+                if (!root) return;
+                var st = document.createElement('style');
+                st.id = 'gd-bg-pause';
+                st.textContent = '*, *::before, *::after { animation-play-state: paused !important; transition: none !important; }';
+                root.appendChild(st);
+            }
+        })();
+        """
+
+    private static let resumeAnimationsScript = """
+        (function() {
+            var el = document.getElementById('gd-bg-pause');
+            if (el) el.remove();
+        })();
+        """
+
+    /// Pauses all CSS animations/transitions while no Gemini window is visible or unoccluded,
+    /// without blocking background network streaming or `ResponseNotifier`.
+    func setPageBackgrounded(_ backgrounded: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.setPageBackgrounded(backgrounded)
+            }
+            return
+        }
+        guard lastBackgroundedState != backgrounded else { return }
+        lastBackgroundedState = backgrounded
+        wkWebView.evaluateJavaScript(
+            backgrounded ? Self.pauseAnimationsScript : Self.resumeAnimationsScript,
+            completionHandler: nil
+        )
     }
 
     // MARK: - Private Setup
@@ -153,20 +194,34 @@ final class WebViewModel: ObservableObject {
         backObserver = wkWebView.observe(\.canGoBack, options: [.new, .initial]) { [weak self] webView, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.canGoBack = !self.isAtHome && webView.canGoBack
+                let newCanGoBack = !self.isAtHome && webView.canGoBack
+                if self.canGoBack != newCanGoBack {
+                    self.canGoBack = newCanGoBack
+                }
             }
         }
 
         forwardObserver = wkWebView.observe(\.canGoForward, options: [.new, .initial]) { [weak self] webView, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.canGoForward = webView.canGoForward
+                let newCanGoForward = webView.canGoForward
+                if self.canGoForward != newCanGoForward {
+                    self.canGoForward = newCanGoForward
+                }
             }
         }
 
         loadingObserver = wkWebView.observe(\.isLoading, options: [.new, .initial]) { [weak self] webView, _ in
             DispatchQueue.main.async {
-                self?.isLoading = webView.isLoading
+                guard let self = self else { return }
+                let newIsLoading = webView.isLoading
+                if self.isLoading != newIsLoading {
+                    self.isLoading = newIsLoading
+                    if !newIsLoading {
+                        self.lastBackgroundedState = nil
+                        self.onPageLoaded?()
+                    }
+                }
             }
         }
 
@@ -178,12 +233,12 @@ final class WebViewModel: ObservableObject {
                 let isGeminiApp = currentURL.host == Self.geminiHost &&
                                   currentURL.path.hasPrefix(Self.geminiAppPath)
 
-                if isGeminiApp {
-                    self.isAtHome = true
-                    self.canGoBack = false
-                } else {
-                    self.isAtHome = false
-                    self.canGoBack = webView.canGoBack
+                if self.isAtHome != isGeminiApp {
+                    self.isAtHome = isGeminiApp
+                }
+                let newCanGoBack = isGeminiApp ? false : webView.canGoBack
+                if self.canGoBack != newCanGoBack {
+                    self.canGoBack = newCanGoBack
                 }
             }
         }

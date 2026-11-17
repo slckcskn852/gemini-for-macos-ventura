@@ -31,6 +31,9 @@ final class AppCoordinator: ObservableObject {
     private(set) var lastExternalApp: NSRunningApplication?
 
     private var cancellables = Set<AnyCancellable>()
+    private var notificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var visibilityUpdatePending = false
+    private var pendingMainRevealWork: DispatchWorkItem?
 
     private init() {
         // Re-publish web view state changes so SwiftUI views observing the coordinator update.
@@ -38,26 +41,64 @@ final class AppCoordinator: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        webViewModel.onPageLoaded = { [weak self] in
+            self?.scheduleVisibilityUpdate()
+        }
+
         // Observe notifications for window opening
-        NotificationCenter.default.addObserver(forName: .openMainWindow, object: nil, queue: .main) { [weak self] _ in
+        let openObserver = NotificationCenter.default.addObserver(forName: .openMainWindow, object: nil, queue: .main) { [weak self] _ in
             self?.openMainWindow()
+        }
+        notificationObservers.append((.default, openObserver))
+
+        // Pause WebKit CSS animations whenever no Gemini window is visible/unoccluded.
+        let visibilityNotifications: [Notification.Name] = [
+            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.willCloseNotification,
+            NSApplication.didHideNotification,
+            NSApplication.didUnhideNotification,
+        ]
+        for name in visibilityNotifications {
+            let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self = self else { return }
+                if name == NSApplication.didHideNotification {
+                    self.pendingMainRevealWork?.cancel()
+                    self.pendingMainRevealWork = nil
+                } else if name == NSWindow.willCloseNotification,
+                          let window = note.object as? NSWindow,
+                          self.isMainWindow(window) {
+                    self.pendingMainRevealWork?.cancel()
+                    self.pendingMainRevealWork = nil
+                }
+                self.scheduleVisibilityUpdate()
+            }
+            notificationObservers.append((.default, observer))
         }
 
         // Track the front-most app that isn't us.
         lastExternalApp = Self.frontmostExternalApp()
-        NSWorkspace.shared.notificationCenter.addObserver(
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let appObserver = workspaceCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
             self?.lastExternalApp = app
         }
+        notificationObservers.append((workspaceCenter, appObserver))
 
         ResponseNotifier.shared.isGeminiVisibleToUser = { [weak self] in
             self?.isGeminiVisibleToUser ?? false
         }
         ResponseNotifier.shared.onNotificationClicked = { [weak self] in
             self?.openMainWindow()
+        }
+    }
+
+    deinit {
+        pendingMainRevealWork?.cancel()
+        for (center, observer) in notificationObservers {
+            center.removeObserver(observer)
         }
     }
 
@@ -117,6 +158,35 @@ final class AppCoordinator: ObservableObject {
     var isChatBarVisible: Bool { chatBar?.isVisible == true }
 
     var isMainWindowVisible: Bool { findMainWindow()?.isVisible == true }
+
+    /// Coalesces rapid occlusion/window notifications onto the next main runloop turn.
+    private func scheduleVisibilityUpdate() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.scheduleVisibilityUpdate()
+            }
+            return
+        }
+        guard !visibilityUpdatePending else { return }
+        visibilityUpdatePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.visibilityUpdatePending = false
+            self.updateWebViewVisibility()
+        }
+    }
+
+    private func updateWebViewVisibility() {
+        let chatVisible = chatBar?.isVisible == true
+        let mainWindow = findMainWindow()
+        let mainVisible = (mainWindow.map { $0.isVisible && $0.occlusionState.contains(.visible) }) ?? false
+        if mainVisible {
+            pendingMainRevealWork?.cancel()
+            pendingMainRevealWork = nil
+        }
+        let isVisible = chatVisible || mainVisible || (pendingMainRevealWork != nil && mainWindow?.isVisible != false)
+        webViewModel.setPageBackgrounded(!isVisible)
+    }
 
     /// True when the user can currently see a Gemini surface.
     var isGeminiVisibleToUser: Bool {
@@ -193,6 +263,8 @@ final class AppCoordinator: ObservableObject {
     // MARK: - Chat Bar
 
     func showChatBar() {
+        webViewModel.setPageBackgrounded(false)
+
         // Hide main window when showing chat bar
         closeMainWindow()
 
@@ -223,9 +295,9 @@ final class AppCoordinator: ObservableObject {
         positionChatBar(bar, position: position)
 
         NSApp.activate(ignoringOtherApps: true)
-        animateIn(bar)
         chatBar = bar
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { bar.checkAndAdjustSize() }
+        animateIn(bar)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { bar.checkAndAdjustSize() }
     }
 
     /// Positions the chat bar based on the given position setting
@@ -258,29 +330,31 @@ final class AppCoordinator: ObservableObject {
 
     func hideChatBar() {
         chatBar?.orderOut(nil)
+        scheduleVisibilityUpdate()
     }
 
     /// Fades out Quick Chat (used for the toggle shortcut).
     func hideChatBarAnimated() {
         guard let bar = chatBar, bar.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.12
+            ctx.duration = 0.10
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             bar.animator().alphaValue = 0
-        }, completionHandler: {
+        }, completionHandler: { [weak self] in
             bar.orderOut(nil)
             bar.alphaValue = 1
+            self?.scheduleVisibilityUpdate()
         })
     }
 
     /// Spotlight-style entrance: fade in while dropping a few points into place.
-    private func animateIn(_ window: NSWindow, offset: CGFloat = 10) {
+    private func animateIn(_ window: NSWindow, offset: CGFloat = 8) {
         let target = window.frame
         window.alphaValue = 0
         window.setFrame(target.offsetBy(dx: 0, dy: offset), display: false)
         window.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
+            ctx.duration = 0.16
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
             window.animator().alphaValue = 1
             window.animator().setFrame(target, display: true)
@@ -288,14 +362,13 @@ final class AppCoordinator: ObservableObject {
     }
 
     func closeMainWindow() {
+        pendingMainRevealWork?.cancel()
+        pendingMainRevealWork = nil
         // Find and hide the main window
-        for window in NSApp.windows {
-            if window.identifier?.rawValue == Constants.mainWindowIdentifier || window.title == Constants.mainWindowTitle {
-                if !(window is NSPanel) {
-                    window.orderOut(nil)
-                }
-            }
+        for window in NSApp.windows where isMainWindow(window) {
+            window.orderOut(nil)
         }
+        scheduleVisibilityUpdate()
     }
 
     func toggleChatBar() {
@@ -318,6 +391,8 @@ final class AppCoordinator: ObservableObject {
     }
 
     func openMainWindow(on targetScreen: NSScreen? = nil) {
+        webViewModel.setPageBackgrounded(false)
+
         // Hide chat bar first - WebView can only be in one view hierarchy
         hideChatBar()
 
@@ -328,6 +403,17 @@ final class AppCoordinator: ObservableObject {
 
         // Find existing main window (may be hidden/suppressed)
         let mainWindow = findMainWindow()
+
+        // Guard against the brief ~20ms WindowServer lag before occlusionState flips to .visible.
+        if !(mainWindow?.isVisible == true && mainWindow?.occlusionState.contains(.visible) == true) {
+            pendingMainRevealWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.pendingMainRevealWork = nil
+                self?.scheduleVisibilityUpdate()
+            }
+            pendingMainRevealWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
 
         if let window = mainWindow {
             // Window exists - show it (works for suppressed windows too)
@@ -364,12 +450,14 @@ final class AppCoordinator: ObservableObject {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
+    private func isMainWindow(_ window: NSWindow) -> Bool {
+        !(window is NSPanel) &&
+        (window.identifier?.rawValue == Constants.mainWindowIdentifier || window.title == Constants.mainWindowTitle)
+    }
+
     /// Finds the main window by identifier or title
     private func findMainWindow() -> NSWindow? {
-        NSApp.windows.first {
-            !($0 is NSPanel) &&
-            ($0.identifier?.rawValue == Constants.mainWindowIdentifier || $0.title == Constants.mainWindowTitle)
-        }
+        NSApp.windows.first(where: isMainWindow)
     }
 
     /// Centers a window on the specified screen

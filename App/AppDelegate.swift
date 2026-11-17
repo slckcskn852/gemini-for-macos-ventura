@@ -29,7 +29,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // "Ask Gemini" in every app's Services / right-click menu
         NSApp.servicesProvider = servicesProvider
-        NSUpdateDynamicServices()
 
         ResponseNotifier.shared.activate()
     }

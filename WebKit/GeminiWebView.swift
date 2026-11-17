@@ -180,13 +180,15 @@ struct GeminiWebView: NSViewRepresentable {
 class WebViewContainer: NSView {
     let webView: WKWebView
     let coordinator: GeminiWebView.Coordinator
+    private let coverView = NSView()
     private var windowObserver: NSObjectProtocol?
     private var revealGeneration = 0
     private var revealedGeneration = 0
     private var revealFallbackWorkItem: DispatchWorkItem?
     private var lastBoundsSize: NSSize = .zero
-    private var liveResizeEndWorkItem: DispatchWorkItem?
+    private var unfreezeWorkItem: DispatchWorkItem?
 
+    private static let quickChatDarkBackgroundColor = NSColor(srgbRed: 13.0 / 255.0, green: 13.0 / 255.0, blue: 16.0 / 255.0, alpha: 1.0)
     private static let darkBackgroundColor = NSColor(srgbRed: 19.0 / 255.0, green: 19.0 / 255.0, blue: 20.0 / 255.0, alpha: 1.0)
     private static let lightBackgroundColor = NSColor(srgbRed: 248.0 / 255.0, green: 250.0 / 255.0, blue: 253.0 / 255.0, alpha: 1.0)
 
@@ -196,6 +198,10 @@ class WebViewContainer: NSView {
         super.init(frame: .zero)
         autoresizesSubviews = true
         wantsLayer = true
+        coverView.wantsLayer = true
+        coverView.autoresizingMask = [.width, .height]
+        coverView.isHidden = true
+        coverView.alphaValue = 0
         updateBackgroundColor()
         setupWindowObserver()
     }
@@ -206,7 +212,7 @@ class WebViewContainer: NSView {
 
     deinit {
         revealFallbackWorkItem?.cancel()
-        liveResizeEndWorkItem?.cancel()
+        unfreezeWorkItem?.cancel()
         if let observer = windowObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -214,7 +220,15 @@ class WebViewContainer: NSView {
 
     private func updateBackgroundColor() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        layer?.backgroundColor = (isDark ? Self.darkBackgroundColor : Self.lightBackgroundColor).cgColor
+        let color: NSColor
+        if isDark {
+            color = (window is NSPanel) ? Self.quickChatDarkBackgroundColor : Self.darkBackgroundColor
+        } else {
+            color = Self.lightBackgroundColor
+        }
+        let cgColor = color.cgColor
+        layer?.backgroundColor = cgColor
+        coverView.layer?.backgroundColor = cgColor
     }
 
     private func setupWindowObserver() {
@@ -234,6 +248,7 @@ class WebViewContainer: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateBackgroundColor()
         if window != nil && window?.isKeyWindow == true {
             attachWebView()
         }
@@ -246,7 +261,8 @@ class WebViewContainer: NSView {
 
     override func viewWillStartLiveResize() {
         super.viewWillStartLiveResize()
-        liveResizeEndWorkItem?.cancel()
+        unfreezeWorkItem?.cancel()
+        unfreezeWorkItem = nil
         if webView.superview === self {
             webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
         }
@@ -255,13 +271,7 @@ class WebViewContainer: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         lastBoundsSize = bounds.size
-        liveResizeEndWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.webView.superview === self else { return }
-            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
-        }
-        liveResizeEndWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        scheduleUnfreeze(after: 0.18, expectedGeneration: nil)
     }
 
     override func layout() {
@@ -269,6 +279,11 @@ class WebViewContainer: NSView {
         updateBackgroundColor()
         if webView.superview === self {
             webView.frame = bounds
+        }
+        if coverView.superview === self {
+            coverView.frame = bounds
+        }
+        if webView.superview === self {
             if inLiveResize {
                 lastBoundsSize = bounds.size
             } else if bounds.width > 10, bounds.height > 10 {
@@ -276,23 +291,62 @@ class WebViewContainer: NSView {
                     (abs(bounds.width - lastBoundsSize.width) > 80 || abs(bounds.height - lastBoundsSize.height) > 80)
                 let becameNonZero = lastBoundsSize == .zero
                 lastBoundsSize = bounds.size
-                if (jumped || becameNonZero), window?.isVisible == true || webView.alphaValue == 0 {
+                if (jumped || becameNonZero), (window?.isVisible == true || !coverView.isHidden) {
                     hideForRelayoutAndSettle(targetSize: bounds.size)
                 }
             }
         }
     }
 
+    private func showCoverImmediately() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updateBackgroundColor()
+        coverView.layer?.removeAllAnimations()
+        coverView.frame = bounds
+        coverView.alphaValue = 1.0
+        coverView.isHidden = false
+        CATransaction.commit()
+    }
+
+    private func scheduleUnfreeze(after delay: TimeInterval, expectedGeneration: Int?) {
+        unfreezeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self,
+                  self.webView.superview === self,
+                  !self.inLiveResize else { return }
+            if let expectedGeneration = expectedGeneration, expectedGeneration != self.revealGeneration {
+                return
+            }
+            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+        }
+        unfreezeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func attachWebView() {
         guard webView.superview !== self else { return }
+
+        revealFallbackWorkItem?.cancel()
+        revealFallbackWorkItem = nil
+        unfreezeWorkItem?.cancel()
+        unfreezeWorkItem = nil
+        revealGeneration += 1
+
+        showCoverImmediately()
+
         webView.removeFromSuperview()
         webView.frame = bounds
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
         webView.wantsLayer = true
-        webView.alphaValue = 0
+        webView.alphaValue = 1.0
         addSubview(webView)
+
+        coverView.removeFromSuperview()
+        addSubview(coverView, positioned: .above, relativeTo: webView)
+
         lastBoundsSize = bounds.size
         if bounds.width > 10 && bounds.height > 10 {
             hideForRelayoutAndSettle(targetSize: bounds.size)
@@ -300,36 +354,98 @@ class WebViewContainer: NSView {
     }
 
     private func hideForRelayoutAndSettle(targetSize: NSSize) {
-        webView.alphaValue = 0
-        webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
-
         revealFallbackWorkItem?.cancel()
+        revealFallbackWorkItem = nil
+        unfreezeWorkItem?.cancel()
+        unfreezeWorkItem = nil
         revealGeneration += 1
         let generation = revealGeneration
+
+        showCoverImmediately()
+        if coverView.superview !== self && webView.superview === self {
+            addSubview(coverView, positioned: .above, relativeTo: webView)
+        }
+        if webView.alphaValue != 1.0 {
+            webView.alphaValue = 1.0
+        }
+        webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
 
         let fallback = DispatchWorkItem { [weak self] in
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: fallback)
 
-        DispatchQueue.main.async { [weak self] in
-            self?.revealWhenLayoutSettles(generation: generation, targetSize: targetSize)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.pollUntilSettled(
+                generation: generation,
+                targetSize: targetSize,
+                attempt: 0,
+                lastSignature: nil,
+                stableCount: 0
+            )
         }
     }
 
-    /// Runs an in-page `requestAnimationFrame` settle loop inside WebContent via a single
-    /// `callAsyncJavaScript` invocation, waiting until WebKit's viewport matches `targetSize`
-    /// and landmark layout stabilizes across consecutive frames.
-    private func revealWhenLayoutSettles(generation: Int, targetSize: NSSize) {
-        guard generation == revealGeneration, webView.superview === self else { return }
+    /// Polls layout signature across bounded IPC round-trips so WebKit flushes layout and paints
+    /// new-size `TiledCoreAnimationDrawingArea` tiles underneath the opaque `coverView` while
+    /// `webView.alphaValue == 1.0`, running zero timers once revealed.
+    private func pollUntilSettled(
+        generation: Int,
+        targetSize: NSSize,
+        attempt: Int,
+        lastSignature: String?,
+        stableCount: Int
+    ) {
+        guard generation == revealGeneration,
+              revealedGeneration != generation,
+              webView.superview === self else { return }
+
         let zoom = webView.pageZoom > 0 ? webView.pageZoom : 1.0
-        let args: [String: Any] = [
-            "expectedWidth": Int((targetSize.width / zoom).rounded()),
-            "expectedHeight": Int((targetSize.height / zoom).rounded())
-        ]
-        webView.callAsyncJavaScript(Self.settleLayoutScript, arguments: args, in: nil, in: .page) { [weak self] _ in
-            self?.revealIfNeeded(generation: generation)
+        let expectedW = Int((targetSize.width / zoom).rounded())
+        let expectedH = Int((targetSize.height / zoom).rounded())
+
+        webView.evaluateJavaScript(Self.layoutSignatureScript) { [weak self] result, error in
+            guard let self = self,
+                  generation == self.revealGeneration,
+                  self.revealedGeneration != generation,
+                  self.webView.superview === self else { return }
+
+            let nextSignature: String?
+            let stable: Int
+            if error == nil, let signature = result as? String {
+                let parts = signature.split(separator: ",").prefix(3).compactMap {
+                    Double($0).map { Int($0.rounded()) }
+                }
+                let w = parts.count > 0 ? parts[0] : 0
+                let h = parts.count > 1 ? parts[1] : 0
+                let sidenavOpen = parts.count > 2 ? parts[2] : 0
+
+                let sizeMatched = parts.count >= 2 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
+                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || attempt >= 8
+                stable = (sizeMatched && sidebarReady && signature == lastSignature) ? (stableCount + 1) : 0
+                nextSignature = signature
+            } else {
+                stable = 0
+                nextSignature = nil
+            }
+
+            if stable >= 2 || attempt >= 14 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
+                    self?.revealIfNeeded(generation: generation)
+                }
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                self?.pollUntilSettled(
+                    generation: generation,
+                    targetSize: targetSize,
+                    attempt: attempt + 1,
+                    lastSignature: nextSignature,
+                    stableCount: stable
+                )
+            }
         }
     }
 
@@ -344,23 +460,22 @@ class WebViewContainer: NSView {
     }
 
     private func fadeInWebView(generation: Int) {
-        NSAnimationContext.runAnimationGroup { ctx in
+        NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.20
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
-            webView.animator().alphaValue = 1
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
-            guard let self = self,
-                  generation == self.revealGeneration,
-                  self.webView.superview === self else { return }
-            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
-        }
+            coverView.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self = self, generation == self.revealGeneration else { return }
+            self.coverView.isHidden = true
+            self.scheduleUnfreeze(after: 0.08, expectedGeneration: generation)
+        })
     }
 
-    static let settleLayoutScript = #"""
-    var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container'];
-    function layoutSignature() {
-        var out = [window.innerWidth, window.innerHeight];
+    static let layoutSignatureScript = #"""
+    (function() {
+        var sidenavOpen = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded') ? 1 : 0;
+        var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container', 'h1'];
+        var out = [window.innerWidth, window.innerHeight, sidenavOpen];
         for (var i = 0; i < sel.length; i++) {
             var el = document.querySelector(sel[i]);
             if (el) {
@@ -369,40 +484,8 @@ class WebViewContainer: NSView {
             }
         }
         return out.join(',');
-    }
-    return new Promise(function(resolve) {
-        if (typeof requestAnimationFrame !== 'function') {
-            resolve(true);
-            return;
-        }
-        var last = null;
-        var stable = 0;
-        var frames = 0;
-        var matchedSizeFrames = 0;
-        function tick() {
-            frames++;
-            var sizeMatched = Math.abs(window.innerWidth - expectedWidth) <= 8 &&
-                              Math.abs(window.innerHeight - expectedHeight) <= 8;
-            if (sizeMatched || frames > 12) {
-                matchedSizeFrames++;
-            }
-            var cur = layoutSignature();
-            if (matchedSizeFrames >= 4 && cur === last) {
-                stable++;
-            } else {
-                stable = 0;
-            }
-            last = cur;
-            if (stable >= 2 || frames >= 24) {
-                resolve(true);
-                return;
-            }
-            requestAnimationFrame(tick);
-        }
-        requestAnimationFrame(tick);
-    });
+    })();
     """#
-
 
     static let freezeLayoutScript = #"""
     (function() {
@@ -412,6 +495,7 @@ class WebViewContainer: NSView {
             st.textContent = 'html.gd-noanim .mat-drawer, html.gd-noanim .mat-drawer-content, html.gd-noanim .mat-drawer-backdrop,' +
               'html.gd-noanim bard-sidenav, html.gd-noanim bard-sidenav *, html.gd-noanim side-navigation-v2, html.gd-noanim side-navigation-v2 *,' +
               'html.gd-noanim chat-window, html.gd-noanim .conversation-container, html.gd-noanim input-container,' +
+              'html.gd-noanim .zero-state-container, html.gd-noanim .zero-state-container *, html.gd-noanim .lm-fade-in-up-animation, html.gd-noanim .fade-in-animation,' +
               'html.gd-noanim user-query, html.gd-noanim model-response { transition: none !important; animation: none !important; }';
             (document.head || document.documentElement).appendChild(st);
         }

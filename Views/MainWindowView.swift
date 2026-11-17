@@ -40,11 +40,12 @@ struct MainWindowView: View {
                     .disabled(!coordinator.canGoBack)
                 }
 
-                ToolbarItem(placement: .principal) {
+                // Flexible space pushes the action buttons to the trailing edge.
+                ToolbarItem(placement: .automatic) {
                     Spacer()
                 }
 
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .automatic) {
                     Menu {
                         Button {
                             coordinator.shareContext(.window(pid: coordinator.lastExternalApp?.processIdentifier))
@@ -73,7 +74,7 @@ struct MainWindowView: View {
                     .help("Share your screen or talk to Gemini")
                 }
 
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .automatic) {
                     Button {
                         coordinator.openNewChat()
                     } label: {
@@ -82,7 +83,7 @@ struct MainWindowView: View {
                     .help("New Chat (⌘N)")
                 }
 
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .automatic) {
                     Button {
                         minimizeToPrompt()
                     } label: {

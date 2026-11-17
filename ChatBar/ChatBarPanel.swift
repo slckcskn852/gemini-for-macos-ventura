@@ -226,7 +226,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     func focusInput() {
         guard let webView = webView else { return }
         // Close Gemini's overlay sidebar (it opens over the chat in narrow windows), then focus the prompt.
-        let closeSidebar = #"(function(){var b=document.querySelector('button[aria-label="Close sidebar"]');var nav=document.querySelector('.mat-drawer-over.mat-drawer-opened');if(b&&nav){b.click();}})();"#
+        let closeSidebar = ChatBarPanel.enterQuickChatScript
         webView.evaluateJavaScript(closeSidebar, completionHandler: nil)
         webView.window?.makeFirstResponder(webView)
         webView.evaluateJavaScript(PromptInjector.focusInputScript, completionHandler: nil)
@@ -289,6 +289,54 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
             self?.focusInput()
         }
     }
+
+    override func orderOut(_ sender: Any?) {
+        super.orderOut(sender)
+        // Restore the normal layout for the main window (shared web view).
+        webView?.evaluateJavaScript(#"document.documentElement.classList.remove('gd-quickchat');"#, completionHandler: nil)
+    }
+
+    /// Adds a compact-layout class (narrow reading column, no sidebar) and
+    /// force-closes Gemini's sidebar whatever mode it is in, retrying while the page settles.
+    static let enterQuickChatScript = #"""
+    (function() {
+        var root = document.documentElement;
+        root.classList.add('gd-quickchat');
+        if (!document.getElementById('gd-quickchat-style')) {
+            var st = document.createElement('style');
+            st.id = 'gd-quickchat-style';
+            st.textContent = `
+              html.gd-quickchat .conversation-container,
+              html.gd-quickchat user-query,
+              html.gd-quickchat model-response,
+              html.gd-quickchat .input-area-container,
+              html.gd-quickchat input-container,
+              html.gd-quickchat .zero-state-container,
+              html.gd-quickchat infinite-scroller > * {
+                  max-width: 660px !important;
+                  margin-left: auto !important;
+                  margin-right: auto !important;
+                  box-sizing: border-box !important;
+              }
+              html.gd-quickchat message-content,
+              html.gd-quickchat .markdown {
+                  line-height: 1.55 !important;
+                  overflow-wrap: anywhere;
+              }
+              html.gd-quickchat infinite-scroller { padding-left: 20px !important; padding-right: 20px !important; }
+              html.gd-quickchat .cdk-overlay-backdrop.mat-drawer-backdrop,
+              html.gd-quickchat .mat-drawer-backdrop.mat-drawer-shown { display: none !important; }`;
+            document.head.appendChild(st);
+        }
+        var tries = 0;
+        (function closeNav() {
+            var opened = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded');
+            var btn = document.querySelector('button[aria-label="Close sidebar"]');
+            if (opened && btn && btn.offsetParent !== null) { btn.click(); }
+            if (++tries < 8) { setTimeout(closeNav, 250); }
+        })();
+    })();
+    """#
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }

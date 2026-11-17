@@ -47,6 +47,7 @@ final class WebViewModel: ObservableObject {
     private var urlObserver: NSKeyValueObservation?
     private var loadingObserver: NSKeyValueObservation?
     private var lastBackgroundedState: Bool?
+    private var backgroundPauseWorkItem: DispatchWorkItem?
     private let consoleLogHandler = ConsoleLogHandler()
 
     // MARK: - Initialization
@@ -55,6 +56,10 @@ final class WebViewModel: ObservableObject {
         self.wkWebView = Self.createWebView(consoleLogHandler: consoleLogHandler)
         setupObservers()
         loadHome()
+    }
+
+    deinit {
+        backgroundPauseWorkItem?.cancel()
     }
 
     // MARK: - Navigation
@@ -132,8 +137,9 @@ final class WebViewModel: ObservableObject {
         })();
         """
 
-    /// Pauses all CSS animations/transitions while no Gemini window is visible or unoccluded,
-    /// without blocking background network streaming or `ResponseNotifier`.
+    /// Pauses all CSS animations/transitions after a 2.5s background debounce while no Gemini
+    /// window is visible or unoccluded, and unpauses immediately on reveal without blocking
+    /// background network streaming or `ResponseNotifier`.
     func setPageBackgrounded(_ backgrounded: Bool) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
@@ -141,12 +147,25 @@ final class WebViewModel: ObservableObject {
             }
             return
         }
-        guard lastBackgroundedState != backgrounded else { return }
-        lastBackgroundedState = backgrounded
-        wkWebView.evaluateJavaScript(
-            backgrounded ? Self.pauseAnimationsScript : Self.resumeAnimationsScript,
-            completionHandler: nil
-        )
+        if !backgrounded {
+            backgroundPauseWorkItem?.cancel()
+            backgroundPauseWorkItem = nil
+            if lastBackgroundedState != false {
+                lastBackgroundedState = false
+                wkWebView.evaluateJavaScript(Self.resumeAnimationsScript, completionHandler: nil)
+            }
+            return
+        }
+
+        guard lastBackgroundedState != true && backgroundPauseWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.backgroundPauseWorkItem = nil
+            self.lastBackgroundedState = true
+            self.wkWebView.evaluateJavaScript(Self.pauseAnimationsScript, completionHandler: nil)
+        }
+        backgroundPauseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
     // MARK: - Private Setup
@@ -218,6 +237,8 @@ final class WebViewModel: ObservableObject {
                 if self.isLoading != newIsLoading {
                     self.isLoading = newIsLoading
                     if !newIsLoading {
+                        self.backgroundPauseWorkItem?.cancel()
+                        self.backgroundPauseWorkItem = nil
                         self.lastBackgroundedState = nil
                         self.onPageLoaded?()
                     }

@@ -34,6 +34,8 @@ final class AppCoordinator: ObservableObject {
     private var notificationObservers: [(NotificationCenter, NSObjectProtocol)] = []
     private var visibilityUpdatePending = false
     private var pendingMainRevealWork: DispatchWorkItem?
+    private var isHidingChatBar = false
+    private var chatBarFadeGeneration: UInt = 0
 
     private init() {
         // Re-publish web view state changes so SwiftUI views observing the coordinator update.
@@ -267,7 +269,6 @@ final class AppCoordinator: ObservableObject {
 
         let alreadyInChatBar = chatBar?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
         if !alreadyInChatBar {
-            webViewModel.wkWebView.alphaValue = 0
             webViewModel.wkWebView.evaluateJavaScript(
                 WebViewContainer.freezeLayoutScript + ChatBarPanel.enterQuickChatScript,
                 completionHandler: nil
@@ -280,12 +281,17 @@ final class AppCoordinator: ObservableObject {
         let position = PanelPosition.current
 
         if let bar = chatBar {
+            let wasHiding = isHidingChatBar
             // Reposition unless "Remember last position" is selected
             if position != .rememberLast {
                 positionChatBar(bar, position: position)
             }
             NSApp.activate(ignoringOtherApps: true)
-            animateIn(bar)
+            if bar.isVisible && !wasHiding {
+                bar.makeKeyAndOrderFront(nil)
+            } else {
+                animateIn(bar, offset: 10, duration: 0.22)
+            }
             bar.checkAndAdjustSize()
             return
         }
@@ -305,7 +311,7 @@ final class AppCoordinator: ObservableObject {
 
         NSApp.activate(ignoringOtherApps: true)
         chatBar = bar
-        animateIn(bar)
+        animateIn(bar, offset: 10, duration: 0.22)
         DispatchQueue.main.async { bar.checkAndAdjustSize() }
     }
 
@@ -338,35 +344,51 @@ final class AppCoordinator: ObservableObject {
     }
 
     func hideChatBar() {
+        chatBarFadeGeneration &+= 1
+        isHidingChatBar = false
         chatBar?.orderOut(nil)
+        chatBar?.alphaValue = 1
         scheduleVisibilityUpdate()
     }
 
     /// Fades out Quick Chat (used for the toggle shortcut).
     func hideChatBarAnimated() {
-        guard let bar = chatBar, bar.isVisible else { return }
+        guard let bar = chatBar, bar.isVisible, !isHidingChatBar else { return }
+        isHidingChatBar = true
+        chatBarFadeGeneration &+= 1
+        let generation = chatBarFadeGeneration
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             bar.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
+            guard let self = self, self.chatBarFadeGeneration == generation else { return }
+            self.isHidingChatBar = false
             bar.orderOut(nil)
             bar.alphaValue = 1
-            self?.scheduleVisibilityUpdate()
+            self.scheduleVisibilityUpdate()
         })
     }
 
     /// Spotlight-style entrance: fade in while dropping a few points into place.
     private func animateIn(_ window: NSWindow, offset: CGFloat = 10, duration: TimeInterval = 0.22) {
+        if window === chatBar {
+            chatBarFadeGeneration &+= 1
+            isHidingChatBar = false
+        }
         let target = window.frame
         window.alphaValue = 0
-        window.setFrame(target.offsetBy(dx: 0, dy: offset), display: false)
+        if offset != 0 {
+            window.setFrame(target.offsetBy(dx: 0, dy: offset), display: false)
+        }
         window.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = duration
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
             window.animator().alphaValue = 1
-            window.animator().setFrame(target, display: true)
+            if offset != 0 {
+                window.animator().setFrame(target, display: true)
+            }
         }
     }
 
@@ -381,7 +403,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     func toggleChatBar() {
-        if let bar = chatBar, bar.isVisible {
+        if let bar = chatBar, bar.isVisible, !isHidingChatBar {
             hideChatBarAnimated()
         } else {
             showChatBar()
@@ -406,7 +428,6 @@ final class AppCoordinator: ObservableObject {
         let mainWindow = findMainWindow()
         let alreadyInMain = mainWindow?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
         if !alreadyInMain {
-            webViewModel.wkWebView.alphaValue = 0
             webViewModel.wkWebView.evaluateJavaScript(
                 WebViewContainer.freezeLayoutScript + ChatBarPanel.exitQuickChatScript,
                 completionHandler: nil
@@ -440,7 +461,7 @@ final class AppCoordinator: ObservableObject {
             if window.isVisible {
                 window.makeKeyAndOrderFront(nil)
             } else {
-                animateIn(window, offset: 0, duration: 0.20)
+                animateIn(window, offset: 0, duration: 0.22)
             }
         } else if let openWindowAction = openWindowAction {
             // Window doesn't exist yet - use SwiftUI openWindow to create it

@@ -17,6 +17,7 @@ enum UserScripts {
     static func createAllScripts() -> [WKUserScript] {
         var scripts: [WKUserScript] = [
             createIMEFixScript(),
+            WKUserScript(source: readingWidthSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: hideGetAppSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: responseWatcherSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         ]
@@ -48,6 +49,31 @@ enum UserScripts {
     }
 
     // MARK: - Script Sources
+
+    /// Keeps the conversation in a centered, readable column (like gemini.google.com
+    /// in a desktop browser) instead of stretching across wide windows.
+    private static let readingWidthSource = #"""
+    (function() {
+        if (document.getElementById('gd-reading-width')) { return; }
+        var st = document.createElement('style');
+        st.id = 'gd-reading-width';
+        st.textContent = `
+          .conversation-container,
+          user-query,
+          model-response,
+          .input-area-container,
+          input-container,
+          .zero-state-container,
+          infinite-scroller > * {
+              max-width: 760px !important;
+              margin-left: auto !important;
+              margin-right: auto !important;
+              box-sizing: border-box !important;
+          }
+          infinite-scroller { padding-left: 24px !important; padding-right: 24px !important; }`;
+        (document.head || document.documentElement).appendChild(st);
+    })();
+    """#
 
     /// Hides Gemini's "Get App" promo buttons — we already are the app.
     private static let hideGetAppSource = """

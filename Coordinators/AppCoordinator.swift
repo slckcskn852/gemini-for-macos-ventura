@@ -265,6 +265,15 @@ final class AppCoordinator: ObservableObject {
     func showChatBar() {
         webViewModel.setPageBackgrounded(false)
 
+        let alreadyInChatBar = chatBar?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
+        if !alreadyInChatBar {
+            webViewModel.wkWebView.alphaValue = 0
+            webViewModel.wkWebView.evaluateJavaScript(
+                WebViewContainer.freezeLayoutScript + ChatBarPanel.enterQuickChatScript,
+                completionHandler: nil
+            )
+        }
+
         // Hide main window when showing chat bar
         closeMainWindow()
 
@@ -297,7 +306,7 @@ final class AppCoordinator: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         chatBar = bar
         animateIn(bar)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { bar.checkAndAdjustSize() }
+        DispatchQueue.main.async { bar.checkAndAdjustSize() }
     }
 
     /// Positions the chat bar based on the given position setting
@@ -337,8 +346,8 @@ final class AppCoordinator: ObservableObject {
     func hideChatBarAnimated() {
         guard let bar = chatBar, bar.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.10
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             bar.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             bar.orderOut(nil)
@@ -348,14 +357,14 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// Spotlight-style entrance: fade in while dropping a few points into place.
-    private func animateIn(_ window: NSWindow, offset: CGFloat = 8) {
+    private func animateIn(_ window: NSWindow, offset: CGFloat = 10, duration: TimeInterval = 0.22) {
         let target = window.frame
         window.alphaValue = 0
         window.setFrame(target.offsetBy(dx: 0, dy: offset), display: false)
         window.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
             window.animator().alphaValue = 1
             window.animator().setFrame(target, display: true)
         }
@@ -393,6 +402,17 @@ final class AppCoordinator: ObservableObject {
     func openMainWindow(on targetScreen: NSScreen? = nil) {
         webViewModel.setPageBackgrounded(false)
 
+        // Find existing main window (may be hidden/suppressed)
+        let mainWindow = findMainWindow()
+        let alreadyInMain = mainWindow?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
+        if !alreadyInMain {
+            webViewModel.wkWebView.alphaValue = 0
+            webViewModel.wkWebView.evaluateJavaScript(
+                WebViewContainer.freezeLayoutScript + ChatBarPanel.exitQuickChatScript,
+                completionHandler: nil
+            )
+        }
+
         // Hide chat bar first - WebView can only be in one view hierarchy
         hideChatBar()
 
@@ -400,9 +420,6 @@ final class AppCoordinator: ObservableObject {
         if !hideDockIcon {
             NSApp.setActivationPolicy(.regular)
         }
-
-        // Find existing main window (may be hidden/suppressed)
-        let mainWindow = findMainWindow()
 
         // Guard against the brief ~20ms WindowServer lag before occlusionState flips to .visible.
         if !(mainWindow?.isVisible == true && mainWindow?.occlusionState.contains(.visible) == true) {
@@ -423,7 +440,7 @@ final class AppCoordinator: ObservableObject {
             if window.isVisible {
                 window.makeKeyAndOrderFront(nil)
             } else {
-                animateIn(window, offset: 0)
+                animateIn(window, offset: 0, duration: 0.20)
             }
         } else if let openWindowAction = openWindowAction {
             // Window doesn't exist yet - use SwiftUI openWindow to create it

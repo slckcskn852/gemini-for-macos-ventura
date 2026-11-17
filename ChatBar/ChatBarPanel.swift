@@ -187,10 +187,10 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     override func orderOut(_ sender: Any?) {
         removeClickOutsideMonitor()
         super.orderOut(sender)
-        // Restore the normal layout for the main window (shared web view).
-        resolvedWebView()?.evaluateJavaScript(#"document.documentElement.classList.remove('gd-quickchat');"#, completionHandler: nil)
         NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: self)
     }
+
+    static let exitQuickChatScript = #"document.documentElement.classList.remove('gd-quickchat');"#
 
     /// Adds a compact-layout class (narrow reading column, no sidebar) and
     /// force-closes Gemini's sidebar when open, retrying up to 5 times while open.

@@ -184,6 +184,8 @@ class WebViewContainer: NSView {
     private var revealGeneration = 0
     private var revealedGeneration = 0
     private var revealFallbackWorkItem: DispatchWorkItem?
+    private var lastBoundsSize: NSSize = .zero
+    private var liveResizeEndWorkItem: DispatchWorkItem?
 
     private static let darkBackgroundColor = NSColor(srgbRed: 19.0 / 255.0, green: 19.0 / 255.0, blue: 20.0 / 255.0, alpha: 1.0)
     private static let lightBackgroundColor = NSColor(srgbRed: 248.0 / 255.0, green: 250.0 / 255.0, blue: 253.0 / 255.0, alpha: 1.0)
@@ -204,6 +206,7 @@ class WebViewContainer: NSView {
 
     deinit {
         revealFallbackWorkItem?.cancel()
+        liveResizeEndWorkItem?.cancel()
         if let observer = windowObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -241,11 +244,42 @@ class WebViewContainer: NSView {
         updateBackgroundColor()
     }
 
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        liveResizeEndWorkItem?.cancel()
+        if webView.superview === self {
+            webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
+        }
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        lastBoundsSize = bounds.size
+        liveResizeEndWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.webView.superview === self else { return }
+            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+        }
+        liveResizeEndWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+    }
+
     override func layout() {
         super.layout()
         updateBackgroundColor()
         if webView.superview === self {
             webView.frame = bounds
+            if inLiveResize {
+                lastBoundsSize = bounds.size
+            } else if bounds.width > 10, bounds.height > 10 {
+                let jumped = lastBoundsSize != .zero &&
+                    (abs(bounds.width - lastBoundsSize.width) > 80 || abs(bounds.height - lastBoundsSize.height) > 80)
+                let becameNonZero = lastBoundsSize == .zero
+                lastBoundsSize = bounds.size
+                if (jumped || becameNonZero), window?.isVisible == true || webView.alphaValue == 0 {
+                    hideForRelayoutAndSettle(targetSize: bounds.size)
+                }
+            }
         }
     }
 
@@ -256,14 +290,18 @@ class WebViewContainer: NSView {
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
-
-        // Moving the shared web view between windows forces a relayout (and Quick Chat
-        // closes the sidebar / narrows the column). Hide it and freeze Gemini's own
-        // layout transitions so the user sees one clean fade instead of the jumps.
         webView.wantsLayer = true
         webView.alphaValue = 0
-        webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
         addSubview(webView)
+        lastBoundsSize = bounds.size
+        if bounds.width > 10 && bounds.height > 10 {
+            hideForRelayoutAndSettle(targetSize: bounds.size)
+        }
+    }
+
+    private func hideForRelayoutAndSettle(targetSize: NSSize) {
+        webView.alphaValue = 0
+        webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
 
         revealFallbackWorkItem?.cancel()
         revealGeneration += 1
@@ -273,19 +311,24 @@ class WebViewContainer: NSView {
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: fallback)
 
         DispatchQueue.main.async { [weak self] in
-            self?.revealWhenLayoutSettles(generation: generation)
+            self?.revealWhenLayoutSettles(generation: generation, targetSize: targetSize)
         }
     }
 
     /// Runs an in-page `requestAnimationFrame` settle loop inside WebContent via a single
-    /// `callAsyncJavaScript` invocation, eliminating per-frame XPC polling churn while waiting
-    /// for two consecutive matching layout signatures (or at most 12 frames / ~200ms).
-    private func revealWhenLayoutSettles(generation: Int) {
+    /// `callAsyncJavaScript` invocation, waiting until WebKit's viewport matches `targetSize`
+    /// and landmark layout stabilizes across consecutive frames.
+    private func revealWhenLayoutSettles(generation: Int, targetSize: NSSize) {
         guard generation == revealGeneration, webView.superview === self else { return }
-        webView.callAsyncJavaScript(Self.settleLayoutScript, in: nil, in: .page) { [weak self] _ in
+        let zoom = webView.pageZoom > 0 ? webView.pageZoom : 1.0
+        let args: [String: Any] = [
+            "expectedWidth": Int((targetSize.width / zoom).rounded()),
+            "expectedHeight": Int((targetSize.height / zoom).rounded())
+        ]
+        webView.callAsyncJavaScript(Self.settleLayoutScript, arguments: args, in: nil, in: .page) { [weak self] _ in
             self?.revealIfNeeded(generation: generation)
         }
     }
@@ -302,11 +345,11 @@ class WebViewContainer: NSView {
 
     private func fadeInWebView(generation: Int) {
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.1
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.duration = 0.20
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
             webView.animator().alphaValue = 1
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
             guard let self = self,
                   generation == self.revealGeneration,
                   self.webView.superview === self else { return }
@@ -333,15 +376,27 @@ class WebViewContainer: NSView {
             return;
         }
         var last = null;
+        var stable = 0;
         var frames = 0;
+        var matchedSizeFrames = 0;
         function tick() {
             frames++;
+            var sizeMatched = Math.abs(window.innerWidth - expectedWidth) <= 8 &&
+                              Math.abs(window.innerHeight - expectedHeight) <= 8;
+            if (sizeMatched || frames > 12) {
+                matchedSizeFrames++;
+            }
             var cur = layoutSignature();
-            if (cur === last || frames >= 12) {
+            if (matchedSizeFrames >= 4 && cur === last) {
+                stable++;
+            } else {
+                stable = 0;
+            }
+            last = cur;
+            if (stable >= 2 || frames >= 24) {
                 resolve(true);
                 return;
             }
-            last = cur;
             requestAnimationFrame(tick);
         }
         requestAnimationFrame(tick);

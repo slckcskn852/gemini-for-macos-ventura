@@ -16,8 +16,8 @@ enum UserScripts {
     /// Creates all user scripts to be injected into the WebView
     static func createAllScripts() -> [WKUserScript] {
         var scripts: [WKUserScript] = [
+            WKUserScript(source: coreStyleSource, injectionTime: .atDocumentStart, forMainFrameOnly: true),
             createIMEFixScript(),
-            WKUserScript(source: readingWidthSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: hideGetAppSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: responseWatcherSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         ]
@@ -50,14 +50,13 @@ enum UserScripts {
 
     // MARK: - Script Sources
 
-    /// Keeps the conversation in a centered, readable column (like gemini.google.com
-    /// in a desktop browser) instead of stretching across wide windows.
-    private static let readingWidthSource = #"""
+    /// Injects core layout, GPU/CPU animation suppression, and static promo hiding
+    /// at document start so WebKit never allocates oversized offscreen backing textures.
+    private static let coreStyleSource = #"""
     (function() {
-        if (document.getElementById('gd-reading-width')) { return; }
-        var st = document.createElement('style');
-        st.id = 'gd-reading-width';
-        st.textContent = `
+        'use strict';
+        if (document.getElementById('gd-core-style')) { return; }
+        var css = `
           .conversation-container,
           user-query,
           model-response {
@@ -66,74 +65,217 @@ enum UserScripts {
               margin-right: auto !important;
               box-sizing: border-box !important;
           }
-          infinite-scroller { padding-left: 24px !important; padding-right: 24px !important; }`;
-        (document.head || document.documentElement).appendChild(st);
+          infinite-scroller { padding-left: 24px !important; padding-right: 24px !important; }
+          chat-loading-animation, .nl-canvas, .nl-blob, .gradient-strip { display: none !important; animation: none !important; filter: none !important; }
+          .mdc-circular-progress--closed .mdc-circular-progress__indeterminate-container, .mdc-circular-progress--closed .mdc-circular-progress__spinner-layer, .mdc-circular-progress--closed svg { animation: none !important; }
+          a[href*="gemini.google/mac"], a[aria-label="Get App" i], a[aria-label="Get the app" i], button[aria-label="Get App" i], button[aria-label="Get the app" i], [role="button"][aria-label="Get App" i], [role="menuitem"][aria-label="Get App" i] { display: none !important; }`;
+        function inject() {
+            if (document.getElementById('gd-core-style')) { return true; }
+            var target = document.head || document.documentElement;
+            if (!target) { return false; }
+            var st = document.createElement('style');
+            st.id = 'gd-core-style';
+            st.textContent = css;
+            target.appendChild(st);
+            return true;
+        }
+        if (!inject()) {
+            document.addEventListener('DOMContentLoaded', inject, { once: true });
+        }
     })();
     """#
 
     /// Hides Gemini's "Get App" promo buttons — we already are the app.
-    private static let hideGetAppSource = """
+    private static let hideGetAppSource = #"""
     (function() {
         'use strict';
-        function hide() {
-            document.querySelectorAll('a, button, [role="button"], [role="menuitem"]').forEach(function(el) {
-                if (el.dataset.gdHidden) { return; }
-                const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-                const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-                const href = (el.getAttribute('href') || '').toLowerCase();
-                if (text === 'get app' || text === 'get the app' || label === 'get app' ||
-                    label === 'get the app' || href.indexOf('gemini.google/mac') !== -1 ||
-                    href.indexOf('/download') !== -1 && text.indexOf('app') !== -1) {
-                    el.dataset.gdHidden = '1';
-                    el.style.setProperty('display', 'none', 'important');
+        const CANDIDATE_SELECTOR = 'a, button, [role="button"], [role="menuitem"]';
+        const SKIP_TEXT_SELECTOR = 'mat-icon, svg, style, script, [aria-hidden="true"]';
+        const STREAMING_SKIP_SELECTOR = 'message-content, model-response, user-query';
+
+        function cleanText(el) {
+            const walker = document.createTreeWalker(
+                el,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode: function(node) {
+                        const parent = node.parentElement;
+                        if (parent && parent.closest && parent.closest(SKIP_TEXT_SELECTOR)) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        return NodeFilter.FILTER_ACCEPT;
+                    }
                 }
-            });
+            );
+            let out = '';
+            let node;
+            while ((node = walker.nextNode())) {
+                out += ' ' + node.nodeValue;
+            }
+            return out.replace(/\s+/g, ' ').trim().toLowerCase();
         }
-        hide();
-        let pending = false;
-        new MutationObserver(function() {
-            if (pending) { return; }
-            pending = true;
-            requestAnimationFrame(function() { pending = false; hide(); });
-        }).observe(document.documentElement, { childList: true, subtree: true });
+
+        function checkCandidate(el) {
+            if (!el || !el.dataset || el.dataset.gdHidden) { return; }
+            const label = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const href = (el.getAttribute('href') || '').toLowerCase();
+            if (label === 'get app' || label === 'get the app' ||
+                href.indexOf('gemini.google/mac') !== -1) {
+                el.dataset.gdHidden = '1';
+                el.style.setProperty('display', 'none', 'important');
+                return;
+            }
+            const text = cleanText(el);
+            if (text === 'get app' || text === 'get the app' ||
+                (href.indexOf('/download') !== -1 && text.indexOf('app') !== -1)) {
+                el.dataset.gdHidden = '1';
+                el.style.setProperty('display', 'none', 'important');
+            }
+        }
+
+        document.querySelectorAll(CANDIDATE_SELECTOR).forEach(checkCandidate);
+
+        const pending = new Set();
+        let flushTimer = null;
+
+        function flushPending() {
+            flushTimer = null;
+            pending.forEach(checkCandidate);
+            pending.clear();
+        }
+
+        function scheduleFlush() {
+            if (flushTimer !== null) {
+                clearTimeout(flushTimer);
+            }
+            flushTimer = setTimeout(flushPending, 150);
+        }
+
+        function collectNode(node) {
+            if (node.nodeType === 1) {
+                let found = false;
+                if (node.matches(CANDIDATE_SELECTOR)) {
+                    pending.add(node);
+                    found = true;
+                }
+                const nested = node.querySelectorAll(CANDIDATE_SELECTOR);
+                for (let i = 0; i < nested.length; i++) {
+                    pending.add(nested[i]);
+                    found = true;
+                }
+                return found;
+            }
+            if (node.nodeType === 3) {
+                const parent = node.parentElement;
+                const candidate = parent && parent.closest(CANDIDATE_SELECTOR);
+                if (candidate) {
+                    pending.add(candidate);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        const root = document.documentElement;
+        if (!root) { return; }
+        new MutationObserver(function(mutations) {
+            let touched = false;
+            for (let i = 0; i < mutations.length; i++) {
+                const m = mutations[i];
+                const target = m.target;
+                const targetEl = target.nodeType === 1 ? target : target.parentElement;
+                if (targetEl && targetEl.closest && targetEl.closest(STREAMING_SKIP_SELECTOR)) {
+                    continue;
+                }
+                const added = m.addedNodes;
+                for (let j = 0; j < added.length; j++) {
+                    if (collectNode(added[j])) {
+                        touched = true;
+                    }
+                }
+            }
+            if (touched) {
+                scheduleFlush();
+            }
+        }).observe(root, { childList: true, subtree: true });
     })();
-    """
+    """#
 
     /// Watches for Gemini finishing a response (the "Stop response" button
     /// disappearing) and tells the native side so it can post a notification.
-    private static let responseWatcherSource = """
+    /// Runs zero timers when idle; only polls while a response is actively streaming.
+    private static let responseWatcherSource = #"""
     (function() {
         'use strict';
         if (window.__geminiDesktopWatcher) { return; }
         window.__geminiDesktopWatcher = true;
 
         let generating = false;
+        let pollTimer = null;
+        let throttleTimer = null;
+
         function isGenerating() {
             return !!document.querySelector(
                 'button[aria-label="Stop response"], button[aria-label*="Stop generating" i], ' +
                 'button.send-button.stop, mat-icon[fonticon="stop"], .stop-icon'
             );
         }
+
         function latestResponsePreview() {
             const nodes = document.querySelectorAll('message-content, model-response');
             if (!nodes.length) { return ''; }
-            const text = (nodes[nodes.length - 1].innerText || '').replace(/\\s+/g, ' ').trim();
+            const text = (nodes[nodes.length - 1].textContent || '').replace(/\s+/g, ' ').trim();
             return text.length > 180 ? text.slice(0, 177) + '…' : text;
         }
-        setInterval(function() {
+
+        function checkState() {
             const now = isGenerating();
-            if (generating && !now) {
+            if (now && !generating) {
+                generating = true;
+                if (pollTimer === null) {
+                    pollTimer = setInterval(checkState, 800);
+                }
+            } else if (!now && generating) {
+                generating = false;
+                if (pollTimer !== null) {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                }
                 try {
-                    window.webkit.messageHandlers.\(ResponseNotifier.messageHandlerName).postMessage({
+                    window.webkit.messageHandlers.\#(ResponseNotifier.messageHandlerName).postMessage({
                         type: 'responseFinished',
                         preview: latestResponsePreview()
                     });
                 } catch (e) {}
             }
-            generating = now;
-        }, 1000);
+        }
+
+        function scheduleCheck() {
+            if (generating || throttleTimer !== null) { return; }
+            throttleTimer = setTimeout(function() {
+                throttleTimer = null;
+                checkState();
+            }, 400);
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                scheduleCheck();
+            }
+        }, true);
+
+        document.addEventListener('click', function() {
+            scheduleCheck();
+        }, true);
+
+        const root = document.body || document.documentElement;
+        if (root) {
+            new MutationObserver(scheduleCheck).observe(root, { childList: true, subtree: true });
+        }
+
+        checkState();
     })();
-    """
+    """#
 
     /// JavaScript to bridge console.log to native Swift via WKScriptMessageHandler
     private static let consoleLogBridgeSource = """

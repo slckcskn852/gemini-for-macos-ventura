@@ -181,12 +181,20 @@ class WebViewContainer: NSView {
     let webView: WKWebView
     let coordinator: GeminiWebView.Coordinator
     private var windowObserver: NSObjectProtocol?
+    private var revealGeneration = 0
+    private var revealedGeneration = 0
+    private var revealFallbackWorkItem: DispatchWorkItem?
+
+    private static let darkBackgroundColor = NSColor(srgbRed: 19.0 / 255.0, green: 19.0 / 255.0, blue: 20.0 / 255.0, alpha: 1.0)
+    private static let lightBackgroundColor = NSColor(srgbRed: 248.0 / 255.0, green: 250.0 / 255.0, blue: 253.0 / 255.0, alpha: 1.0)
 
     init(webView: WKWebView, coordinator: GeminiWebView.Coordinator) {
         self.webView = webView
         self.coordinator = coordinator
         super.init(frame: .zero)
         autoresizesSubviews = true
+        wantsLayer = true
+        updateBackgroundColor()
         setupWindowObserver()
     }
 
@@ -195,9 +203,15 @@ class WebViewContainer: NSView {
     }
 
     deinit {
+        revealFallbackWorkItem?.cancel()
         if let observer = windowObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+    }
+
+    private func updateBackgroundColor() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.backgroundColor = (isDark ? Self.darkBackgroundColor : Self.lightBackgroundColor).cgColor
     }
 
     private func setupWindowObserver() {
@@ -222,8 +236,14 @@ class WebViewContainer: NSView {
         }
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackgroundColor()
+    }
+
     override func layout() {
         super.layout()
+        updateBackgroundColor()
         if webView.superview === self {
             webView.frame = bounds
         }
@@ -245,55 +265,87 @@ class WebViewContainer: NSView {
         webView.evaluateJavaScript(Self.freezeLayoutScript, completionHandler: nil)
         addSubview(webView)
 
+        revealFallbackWorkItem?.cancel()
         revealGeneration += 1
         let generation = revealGeneration
+
+        let fallback = DispatchWorkItem { [weak self] in
+            self?.revealIfNeeded(generation: generation)
+        }
+        revealFallbackWorkItem = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: fallback)
+
         DispatchQueue.main.async { [weak self] in
-            self?.revealWhenLayoutSettles(generation: generation, attempt: 0, lastSignature: nil, stableCount: 0)
+            self?.revealWhenLayoutSettles(generation: generation)
         }
     }
 
-    private var revealGeneration = 0
-
-    /// Polls a cheap layout signature (positions of the main page landmarks) and only
-    /// fades the page in once it has stopped moving, so the relayout is never visible.
-    private func revealWhenLayoutSettles(generation: Int, attempt: Int, lastSignature: String?, stableCount: Int) {
+    /// Runs an in-page `requestAnimationFrame` settle loop inside WebContent via a single
+    /// `callAsyncJavaScript` invocation, eliminating per-frame XPC polling churn while waiting
+    /// for two consecutive matching layout signatures (or at most 12 frames / ~200ms).
+    private func revealWhenLayoutSettles(generation: Int) {
         guard generation == revealGeneration, webView.superview === self else { return }
-        webView.evaluateJavaScript(Self.layoutSignatureScript) { [weak self] result, _ in
-            guard let self = self, generation == self.revealGeneration else { return }
-            let signature = result as? String ?? ""
-            let stable = signature == lastSignature ? stableCount + 1 : 0
-            // Unchanged across two consecutive frames, or give up after ~350 ms.
-            if stable >= 1 || attempt >= 20 {
-                self.fadeInWebView()
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) {
-                    self.revealWhenLayoutSettles(generation: generation, attempt: attempt + 1, lastSignature: signature, stableCount: stable)
-                }
-            }
+        webView.callAsyncJavaScript(Self.settleLayoutScript, in: nil, in: .page) { [weak self] _ in
+            self?.revealIfNeeded(generation: generation)
         }
     }
 
-    private func fadeInWebView() {
+    private func revealIfNeeded(generation: Int) {
+        guard generation == revealGeneration,
+              revealedGeneration != generation,
+              webView.superview === self else { return }
+        revealedGeneration = generation
+        revealFallbackWorkItem?.cancel()
+        revealFallbackWorkItem = nil
+        fadeInWebView(generation: generation)
+    }
+
+    private func fadeInWebView(generation: Int) {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.1
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             webView.animator().alphaValue = 1
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+            guard let self = self,
+                  generation == self.revealGeneration,
+                  self.webView.superview === self else { return }
+            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
         }
     }
 
-    static let layoutSignatureScript = #"""
-    (function() {
-        var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container'];
+    static let settleLayoutScript = #"""
+    var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container'];
+    function layoutSignature() {
         var out = [window.innerWidth, window.innerHeight];
-        sel.forEach(function(s) {
-            var el = document.querySelector(s);
-            if (el) { var r = el.getBoundingClientRect(); out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)); }
-        });
+        for (var i = 0; i < sel.length; i++) {
+            var el = document.querySelector(sel[i]);
+            if (el) {
+                var r = el.getBoundingClientRect();
+                out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
+            }
+        }
         return out.join(',');
-    })();
+    }
+    return new Promise(function(resolve) {
+        if (typeof requestAnimationFrame !== 'function') {
+            resolve(true);
+            return;
+        }
+        var last = null;
+        var frames = 0;
+        function tick() {
+            frames++;
+            var cur = layoutSignature();
+            if (cur === last || frames >= 12) {
+                resolve(true);
+                return;
+            }
+            last = cur;
+            requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+    });
     """#
 
 

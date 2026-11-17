@@ -193,7 +193,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     static let exitQuickChatScript = #"document.documentElement.classList.remove('gd-quickchat');"#
 
     /// Adds a compact-layout class (narrow reading column, no sidebar) and
-    /// force-closes Gemini's sidebar when open, retrying up to 5 times while open.
+    /// force-closes Gemini's sidebar when open, retrying up to 6 times while open.
     static let enterQuickChatScript = #"""
     (function() {
         var root = document.documentElement;
@@ -225,8 +225,8 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
             var opened = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded');
             if (!opened) { return; }
             var btn = document.querySelector('button[aria-label="Close sidebar"]');
-            if (btn && btn.offsetParent !== null) { btn.click(); }
-            if (++tries < 5) { setTimeout(closeNav, 200); }
+            if (btn) { btn.click(); }
+            if (++tries < 6) { setTimeout(closeNav, 60); }
         })();
     })();
     """#

@@ -20,7 +20,7 @@ struct MainWindowView: View {
                 ProgressView()
                     .controlSize(.large)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.background)
+                    .background(Self.loadingSurfaceColor)
             }
         }
             .onAppear {
@@ -96,13 +96,13 @@ struct MainWindowView: View {
         return "Share Active Window"
     }
 
+    private static let loadingSurfaceColor = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 19.0 / 255.0, green: 19.0 / 255.0, blue: 20.0 / 255.0, alpha: 1.0)
+            : NSColor(srgbRed: 248.0 / 255.0, green: 250.0 / 255.0, blue: 253.0 / 255.0, alpha: 1.0)
+    })
+
     private func minimizeToPrompt() {
-        // Close main window and show chat bar
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == AppCoordinator.Constants.mainWindowIdentifier || $0.title == AppCoordinator.Constants.mainWindowTitle }) {
-            if !(window is NSPanel) {
-                window.orderOut(nil)
-            }
-        }
         coordinator.showChatBar()
     }
 }

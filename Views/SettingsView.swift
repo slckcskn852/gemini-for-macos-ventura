@@ -11,7 +11,7 @@ struct SettingsView: View {
     @AppStorage(UserDefaultsKeys.appTheme.rawValue) private var appTheme: String = AppTheme.system.rawValue
     @AppStorage(UserDefaultsKeys.userAgentOption.rawValue) private var userAgentOption: String = UserAgentOption.safari.rawValue
     @AppStorage(UserDefaultsKeys.customUserAgent.rawValue) private var customUserAgent: String = ""
-    @AppStorage(UserDefaultsKeys.panelPosition.rawValue) private var panelPosition: String = PanelPosition.bottomCenter.rawValue
+    @AppStorage(UserDefaultsKeys.panelPosition.rawValue) private var panelPosition: String = PanelPosition.topCenter.rawValue
     @AppStorage(UserDefaultsKeys.notifyOnResponse.rawValue) private var notifyOnResponse: Bool = true
 
     @State private var showingResetAlert = false
@@ -63,14 +63,14 @@ struct SettingsView: View {
                     Label("Position on Screen", systemImage: "rectangle.bottomthird.inset.filled")
                     Spacer()
                     Picker("", selection: $panelPosition) {
-                        ForEach([PanelPosition.bottomLeft, .bottomCenter, .bottomRight], id: \.rawValue) { pos in
+                        ForEach([PanelPosition.topCenter, .bottomLeft, .bottomCenter, .bottomRight], id: \.rawValue) { pos in
                             Text(pos.displayName).tag(pos.rawValue)
                         }
                         Divider()
                         Text(PanelPosition.rememberLast.displayName).tag(PanelPosition.rememberLast.rawValue)
                     }
                     .labelsHidden()
-                    .frame(width: 200)
+                    .frame(width: 240)
                     .onChange(of: panelPosition) { _ in
                         coordinator.resetChatBarPosition()
                     }

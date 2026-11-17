@@ -42,6 +42,11 @@ extension NSScreen {
     /// Returns the position for a window based on the given panel position setting
     func point(for windowSize: NSSize, position: PanelPosition, dockOffset: CGFloat, sideOffset: CGFloat = 50) -> NSPoint {
         switch position {
+        case .topCenter:
+            return NSPoint(
+                x: visibleFrame.origin.x + (visibleFrame.width - windowSize.width) / 2,
+                y: max(visibleFrame.origin.y + 20, visibleFrame.maxY - windowSize.height - visibleFrame.height * 0.08)
+            )
         case .bottomLeft:
             return NSPoint(
                 x: visibleFrame.origin.x + sideOffset,

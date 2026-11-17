@@ -15,8 +15,8 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         let width = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelWidth.rawValue)
         let height = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelHeight.rawValue)
         return NSSize(
-            width: width > 0 ? width : Constants.defaultWidth,
-            height: height > 0 ? height : Constants.defaultHeight
+            width: width >= Constants.minWidth ? width : Constants.defaultWidth,
+            height: height >= Constants.minHeight ? height : Constants.defaultHeight
         )
     }
 
@@ -51,8 +51,8 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     init(contentView: NSView) {
         let width = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelWidth.rawValue)
         let height = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelHeight.rawValue)
-        let initWidth = width > 0 ? width : Constants.defaultWidth
-        let initHeight = height > 0 ? height : Constants.defaultHeight
+        let initWidth = width >= Constants.minWidth ? width : Constants.defaultWidth
+        let initHeight = height >= Constants.minHeight ? height : Constants.defaultHeight
 
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: initWidth, height: initHeight),
@@ -137,6 +137,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     }
 
     private func checkForConversation() {
+        return // Quick Chat is full-size now; no auto-grow needed
         guard !isExpanded else { return }
         guard let webView = webView else { return }
 
@@ -202,6 +203,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         // Focus the input field
         focusInput()
 
+        return;
         webView.evaluateJavaScript(checkConversationScript) { [weak self] result, _ in
             guard let self = self else { return }
             DispatchQueue.main.async {
@@ -223,6 +225,10 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     /// Focus the input field in the WebView
     func focusInput() {
         guard let webView = webView else { return }
+        // Close Gemini's overlay sidebar (it opens over the chat in narrow windows), then focus the prompt.
+        let closeSidebar = #"(function(){var b=document.querySelector('button[aria-label="Close sidebar"]');var nav=document.querySelector('.mat-drawer-over.mat-drawer-opened');if(b&&nav){b.click();}})();"#
+        webView.evaluateJavaScript(closeSidebar, completionHandler: nil)
+        webView.window?.makeFirstResponder(webView)
         webView.evaluateJavaScript(PromptInjector.focusInputScript, completionHandler: nil)
     }
 
@@ -280,7 +286,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         guard let webView = webView else { return }
         PromptInjector.newChat(in: webView) { [weak self] in
             // Reset to initial size since we're starting a new chat
-            self?.resetToInitialSize()
+            self?.focusInput()
         }
     }
 
@@ -292,13 +298,13 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
 extension ChatBarPanel {
 
     struct Constants {
-        static let defaultWidth: CGFloat = 500
-        static let defaultHeight: CGFloat = 200
-        static let minWidth: CGFloat = 300
-        static let minHeight: CGFloat = 150
-        static let maxWidth: CGFloat = 900
-        static let maxHeight: CGFloat = 900
-        static let cornerRadius: CGFloat = 30
+        static let defaultWidth: CGFloat = 760
+        static let defaultHeight: CGFloat = 620
+        static let minWidth: CGFloat = 560
+        static let minHeight: CGFloat = 420
+        static let maxWidth: CGFloat = 1400
+        static let maxHeight: CGFloat = 1400
+        static let cornerRadius: CGFloat = 18
         static let borderWidth: CGFloat = 0.5
         static let expandedScreenRatio: CGFloat = 0.7
         static let animationDuration: Double = 0.3

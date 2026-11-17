@@ -203,6 +203,7 @@ final class AppCoordinator: ObservableObject {
             if position != .rememberLast {
                 positionChatBar(bar, position: position)
             }
+            NSApp.activate(ignoringOtherApps: true)
             bar.makeKeyAndOrderFront(nil)
             bar.checkAndAdjustSize()
             return
@@ -221,8 +222,10 @@ final class AppCoordinator: ObservableObject {
         // Position based on setting
         positionChatBar(bar, position: position)
 
+        NSApp.activate(ignoringOtherApps: true)
         bar.makeKeyAndOrderFront(nil)
         chatBar = bar
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { bar.checkAndAdjustSize() }
     }
 
     /// Positions the chat bar based on the given position setting

@@ -129,6 +129,7 @@ enum UserAgentOption: String, CaseIterable {
 }
 
 enum PanelPosition: String, CaseIterable {
+    case topCenter
     case bottomLeft
     case bottomCenter
     case bottomRight
@@ -136,6 +137,7 @@ enum PanelPosition: String, CaseIterable {
 
     var displayName: String {
         switch self {
+        case .topCenter: return "Top Center (Spotlight-style)"
         case .bottomLeft: return "Bottom Left"
         case .bottomCenter: return "Bottom Center"
         case .bottomRight: return "Bottom Right"
@@ -144,7 +146,7 @@ enum PanelPosition: String, CaseIterable {
     }
 
     static var current: PanelPosition {
-        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.panelPosition.rawValue) ?? "bottomCenter"
-        return PanelPosition(rawValue: raw) ?? .bottomCenter
+        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.panelPosition.rawValue) ?? "topCenter"
+        return PanelPosition(rawValue: raw) ?? .topCenter
     }
 }

@@ -358,7 +358,7 @@ final class AppCoordinator: ObservableObject {
         chatBarFadeGeneration &+= 1
         let generation = chatBarFadeGeneration
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
+            ctx.duration = 0.12
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             bar.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
@@ -371,7 +371,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// Spotlight-style entrance: fade in while dropping a few points into place.
-    private func animateIn(_ window: NSWindow, offset: CGFloat = 10, duration: TimeInterval = 0.22) {
+    private func animateIn(_ window: NSWindow, offset: CGFloat = 8, duration: TimeInterval = 0.18) {
         if window === chatBar {
             chatBarFadeGeneration &+= 1
             isHidingChatBar = false
@@ -461,7 +461,7 @@ final class AppCoordinator: ObservableObject {
             if window.isVisible {
                 window.makeKeyAndOrderFront(nil)
             } else {
-                animateIn(window, offset: 0, duration: 0.22)
+                animateIn(window, offset: 0, duration: 0.18)
             }
         } else if let openWindowAction = openWindowAction {
             // Window doesn't exist yet - use SwiftUI openWindow to create it

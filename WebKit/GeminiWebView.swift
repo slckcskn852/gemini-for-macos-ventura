@@ -288,16 +288,15 @@ class WebViewContainer: NSView {
             if inLiveResize {
                 lastBoundsSize = bounds.size
             } else if bounds.width > 10, bounds.height > 10 {
-                let jumped = lastBoundsSize != .zero &&
-                    (abs(bounds.width - lastBoundsSize.width) > 80 || abs(bounds.height - lastBoundsSize.height) > 80)
-                let becameNonZero = lastBoundsSize == .zero
+                let oldSize = lastBoundsSize
+                let jumped = oldSize != .zero &&
+                    (abs(bounds.width - oldSize.width) > 80 || abs(bounds.height - oldSize.height) > 80)
+                let becameNonZero = oldSize == .zero
                 lastBoundsSize = bounds.size
                 if (jumped || becameNonZero), (window?.isVisible == true || !coverView.isHidden) {
-                    let isCrossSize = jumped || (pendingAttachSourceSize.map {
-                        abs(bounds.width - $0.width) > 80 || abs(bounds.height - $0.height) > 80
-                    } ?? false)
+                    let sourceSize = jumped ? oldSize : pendingAttachSourceSize
                     pendingAttachSourceSize = nil
-                    hideForRelayoutAndSettle(targetSize: bounds.size, isCrossSize: isCrossSize)
+                    hideForRelayoutAndSettle(targetSize: bounds.size, sourceSize: sourceSize)
                 }
             }
         }
@@ -336,7 +335,8 @@ class WebViewContainer: NSView {
         revealGeneration += 1
 
         let previousSize = webView.frame.size
-        pendingAttachSourceSize = (previousSize.width > 10 && previousSize.height > 10) ? previousSize : nil
+        let sourceSize = (previousSize.width > 10 && previousSize.height > 10) ? previousSize : nil
+        pendingAttachSourceSize = sourceSize
 
         showCoverImmediately()
 
@@ -354,15 +354,12 @@ class WebViewContainer: NSView {
 
         lastBoundsSize = bounds.size
         if bounds.width > 10 && bounds.height > 10 {
-            let isCrossSize = pendingAttachSourceSize.map {
-                abs(bounds.width - $0.width) > 80 || abs(bounds.height - $0.height) > 80
-            } ?? false
             pendingAttachSourceSize = nil
-            hideForRelayoutAndSettle(targetSize: bounds.size, isCrossSize: isCrossSize)
+            hideForRelayoutAndSettle(targetSize: bounds.size, sourceSize: sourceSize)
         }
     }
 
-    private func hideForRelayoutAndSettle(targetSize: NSSize, isCrossSize: Bool) {
+    private func hideForRelayoutAndSettle(targetSize: NSSize, sourceSize: NSSize?) {
         revealFallbackWorkItem?.cancel()
         revealFallbackWorkItem = nil
         unfreezeWorkItem?.cancel()
@@ -383,17 +380,16 @@ class WebViewContainer: NSView {
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.68, execute: fallback)
 
         let startUptime = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
             self?.pollUntilSettled(
                 generation: generation,
                 targetSize: targetSize,
-                isCrossSize: isCrossSize,
+                sourceSize: sourceSize,
                 startUptime: startUptime,
                 attempt: 0,
-                baselineSignature: nil,
                 lastSignature: nil,
                 stableCount: 0
             )
@@ -402,16 +398,14 @@ class WebViewContainer: NSView {
 
     /// Polls layout signature across bounded IPC round-trips so WebKit flushes layout and paints
     /// new-size `TiledCoreAnimationDrawingArea` tiles underneath the opaque `coverView` while
-    /// `webView.alphaValue == 1.0`. On cross-size (`>80px`) transitions, waits for Angular's
-    /// breakpoint relayout (`signature != baselineSignature || elapsed >= 0.85`, with a `0.45s`
-    /// minimum floor) and visible `opacity` readiness before revealing, leaving zero idle timers.
+    /// `webView.alphaValue == 1.0`. Detects Gemini's `960px` responsive breakpoint directly via
+    /// `contentLeft` and finishes finite Web Animations in place, leaving zero idle timers.
     private func pollUntilSettled(
         generation: Int,
         targetSize: NSSize,
-        isCrossSize: Bool,
+        sourceSize: NSSize?,
         startUptime: TimeInterval,
         attempt: Int,
-        baselineSignature: String?,
         lastSignature: String?,
         stableCount: Int
     ) {
@@ -422,6 +416,11 @@ class WebViewContainer: NSView {
         let zoom = webView.pageZoom > 0 ? webView.pageZoom : 1.0
         let expectedW = Int((targetSize.width / zoom).rounded())
         let expectedH = Int((targetSize.height / zoom).rounded())
+        let crossesBreakpoint: Bool = {
+            guard let src = sourceSize, src.width > 10 else { return false }
+            let srcW = Int((src.width / zoom).rounded())
+            return (srcW >= 960 && expectedW < 960) || (srcW < 960 && expectedW >= 960)
+        }()
 
         webView.evaluateJavaScript(Self.layoutSignatureScript) { [weak self] result, error in
             guard let self = self,
@@ -430,7 +429,6 @@ class WebViewContainer: NSView {
                   self.webView.superview === self else { return }
 
             let nowElapsed = ProcessInfo.processInfo.systemUptime - startUptime
-            var nextBaseline = baselineSignature
             let nextSignature: String?
             let stable: Int
 
@@ -441,26 +439,20 @@ class WebViewContainer: NSView {
                 let w = parts.count > 0 ? parts[0] : 0
                 let h = parts.count > 1 ? parts[1] : 0
                 let sidenavOpen = parts.count > 2 ? parts[2] : 0
-                let opqOk = parts.count > 3 ? parts[3] : 1
+                let contentLeft = parts.count > 3 ? parts[3] : -1
 
                 let sizeMatched = parts.count >= 4 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
-                if sizeMatched {
-                    if nextBaseline == nil {
-                        nextBaseline = signature
-                    } else if sidenavOpen == 0, nowElapsed < 0.35,
-                              nextBaseline?.split(separator: ",").dropFirst(2).first == "1" {
-                        // Refresh baseline once Quick Chat's early sidebar close finishes so
-                        // `signature != nextBaseline` still detects Angular's later breakpoint switch.
-                        nextBaseline = signature
+                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 0.50
+                let breakpointReady: Bool = {
+                    guard crossesBreakpoint else { return true }
+                    if expectedW < 960 {
+                        return (contentLeft >= 0 && contentLeft <= 12 && sidenavOpen == 0) || nowElapsed >= 0.50
+                    } else {
+                        return (contentLeft >= 36) || nowElapsed >= 0.50
                     }
-                }
+                }()
 
-                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 0.90
-                let opacityReady = opqOk == 1 || nowElapsed >= 0.95
-                let floorReady = !isCrossSize || nowElapsed >= 0.45
-                let changedReady = !isCrossSize || (nextBaseline != nil && signature != nextBaseline!) || nowElapsed >= 0.85
-
-                if sizeMatched && sidebarReady && opacityReady && floorReady && changedReady && signature == lastSignature {
+                if sizeMatched && sidebarReady && breakpointReady && signature == lastSignature {
                     stable = stableCount + 1
                 } else {
                     stable = 0
@@ -471,21 +463,20 @@ class WebViewContainer: NSView {
                 nextSignature = nil
             }
 
-            if stable >= 2 || attempt >= 28 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
+            if stable >= 2 || nowElapsed >= 0.58 || attempt >= 22 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
                     self?.revealIfNeeded(generation: generation)
                 }
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
                 self?.pollUntilSettled(
                     generation: generation,
                     targetSize: targetSize,
-                    isCrossSize: isCrossSize,
+                    sourceSize: sourceSize,
                     startUptime: startUptime,
                     attempt: attempt + 1,
-                    baselineSignature: nextBaseline,
                     lastSignature: nextSignature,
                     stableCount: stable
                 )
@@ -506,7 +497,7 @@ class WebViewContainer: NSView {
 
     private func fadeInWebView(generation: Int) {
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.20
+            ctx.duration = 0.14
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
             coverView.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
@@ -517,31 +508,29 @@ class WebViewContainer: NSView {
 
     static let layoutSignatureScript = #"""
     (function() {
-        var sidenavOpen = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded') ? 1 : 0;
-        var fadeSel = ['bard-mode-switcher', '.input-area-container', '.static-sparkle-container', 'h1', '.lm-fade-in-up-animation', '.fade-in-animation'];
-        var opqOk = 1;
-        for (var j = 0; j < fadeSel.length; j++) {
-            var nodes = document.querySelectorAll(fadeSel[j]);
-            for (var k = 0; k < nodes.length; k++) {
-                var nr = nodes[k].getBoundingClientRect();
-                if (nr.width > 0 && nr.height > 0) {
-                    var ncs = getComputedStyle(nodes[k]);
-                    if (ncs.visibility !== 'hidden' && parseFloat(ncs.opacity) < 0.95) {
-                        opqOk = 0;
-                        break;
-                    }
-                }
+        if (document.getAnimations) {
+            var anims = document.getAnimations();
+            for (var aIdx = 0; aIdx < anims.length; aIdx++) {
+                var anim = anims[aIdx];
+                if (anim.effect && anim.effect.getComputedTiming && anim.effect.getComputedTiming().iterations === Infinity) continue;
+                try { anim.finish(); } catch (e) {}
             }
-            if (!opqOk) break;
         }
-        var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container', '.static-sparkle-container', 'h1', '.fade-in-animation'];
-        var out = [window.innerWidth, window.innerHeight, sidenavOpen, opqOk];
+        var narrow = window.innerWidth < 960;
+        var sidenavOpen = document.querySelector(
+            narrow
+                ? 'mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded'
+                : 'mat-sidenav.mat-drawer-over.mat-drawer-opened, .mat-drawer-over.mat-drawer-opened'
+        ) ? 1 : 0;
+        var contentEl = document.querySelector('bard-sidenav-content') || document.querySelector('chat-window') || document.querySelector('input-container');
+        var contentLeft = contentEl ? Math.round(contentEl.getBoundingClientRect().left) : -1;
+        var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', '.zero-state-container', 'h1', '.suggestion-block-container'];
+        var out = [window.innerWidth, window.innerHeight, sidenavOpen, contentLeft];
         for (var i = 0; i < sel.length; i++) {
             var el = document.querySelector(sel[i]);
             if (el) {
                 var r = el.getBoundingClientRect();
-                var cs = getComputedStyle(el);
-                out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height), Math.round(parseFloat(cs.opacity) * 100));
+                out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
             } else {
                 out.push(-1);
             }

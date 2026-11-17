@@ -6,25 +6,18 @@
 //
 
 import SwiftUI
-import KeyboardShortcuts
 import AppKit
 import Combine
-
-// MARK: - Keyboard Shortcut Definition
-extension KeyboardShortcuts.Name {
-    static let bringToFront = Self("bringToFront", default: nil)
-}
 
 // MARK: - Main App
 @main
 struct GeminiDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @State var coordinator = AppCoordinator()
-    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var coordinator = AppCoordinator.shared
 
     var body: some Scene {
         Window(AppCoordinator.Constants.mainWindowTitle, id: Constants.mainWindowID) {
-            MainWindowView(coordinator: $coordinator)
+            MainWindowView(coordinator: coordinator)
                 .toolbarBackground(Color(nsColor: Constants.toolbarColor), for: .windowToolbar)
                 .frame(minWidth: Constants.mainWindowMinWidth, minHeight: Constants.mainWindowMinHeight)
         }
@@ -40,7 +33,47 @@ struct GeminiDesktopApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
 
+            CommandMenu("Gemini") {
+                Button {
+                    coordinator.toggleChatBar()
+                } label: {
+                    Label("Toggle Quick Chat", systemImage: "rectangle.bottomthird.inset.filled")
+                }
+
+                Divider()
+
+                Button {
+                    coordinator.shareContext(.window(pid: coordinator.lastExternalApp?.processIdentifier))
+                } label: {
+                    Label("Ask About Active Window", systemImage: "macwindow.on.rectangle")
+                }
+                .keyboardShortcut("1", modifiers: [.command, .option])
+
+                Button {
+                    coordinator.shareContext(.area)
+                } label: {
+                    Label("Ask About Screen Area…", systemImage: "rectangle.dashed")
+                }
+                .keyboardShortcut("2", modifiers: [.command, .option])
+
+                Button {
+                    coordinator.shareContext(.screen)
+                } label: {
+                    Label("Ask About Entire Screen", systemImage: "display")
+                }
+                .keyboardShortcut("3", modifiers: [.command, .option])
+
+                Divider()
+
+                Button {
+                    coordinator.startVoiceInput()
+                } label: {
+                    Label("Talk to Gemini", systemImage: "mic")
+                }
+            }
+
             CommandGroup(after: .toolbar) {
+                Group {
                 Button {
                     coordinator.goBack()
                 } label: {
@@ -86,6 +119,8 @@ struct GeminiDesktopApp: App {
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
 
+                }
+
                 Divider()
 
                 Button {
@@ -112,12 +147,12 @@ struct GeminiDesktopApp: App {
         }
 
         Settings {
-            SettingsView(coordinator: $coordinator)
+            SettingsView(coordinator: coordinator)
+                .frame(width: Constants.settingsWindowDefaultWidth, height: Constants.settingsWindowDefaultHeight)
         }
-        .defaultSize(width: Constants.settingsWindowDefaultWidth, height: Constants.settingsWindowDefaultHeight)
 
         MenuBarExtra {
-            MenuBarView(coordinator: $coordinator)
+            MenuBarView(coordinator: coordinator)
         } label: {
             Image(systemName: Constants.menuBarIcon)
                 .onAppear {
@@ -137,6 +172,7 @@ struct GeminiDesktopApp: App {
                         }
                     } else {
                         NSApp.setActivationPolicy(.regular)
+                        NSApp.activate(ignoringOtherApps: true)
                     }
                 }
         }
@@ -146,10 +182,6 @@ struct GeminiDesktopApp: App {
     init() {
         // Apply saved theme on launch
         AppTheme.current.apply()
-
-        KeyboardShortcuts.onKeyDown(for: .bringToFront) { [self] in
-            coordinator.toggleChatBar()
-        }
     }
 }
 
@@ -163,8 +195,8 @@ extension GeminiDesktopApp {
         static let mainWindowDefaultHeight: CGFloat = 700
 
         // Settings Window
-        static let settingsWindowDefaultWidth: CGFloat = 700
-        static let settingsWindowDefaultHeight: CGFloat = 600
+        static let settingsWindowDefaultWidth: CGFloat = 620
+        static let settingsWindowDefaultHeight: CGFloat = 640
 
         static let mainWindowID = "main"
 

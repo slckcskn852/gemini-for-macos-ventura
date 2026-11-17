@@ -48,20 +48,6 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         })();
         """
 
-    // JavaScript to focus the input field
-    private let focusInputScript = """
-        (function() {
-            const input = document.querySelector('rich-textarea[aria-label="Enter a prompt here"]') ||
-                          document.querySelector('[contenteditable="true"]') ||
-                          document.querySelector('textarea');
-            if (input) {
-                input.focus();
-                return true;
-            }
-            return false;
-        })();
-        """
-
     init(contentView: NSView) {
         let width = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelWidth.rawValue)
         let height = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelHeight.rawValue)
@@ -237,7 +223,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     /// Focus the input field in the WebView
     func focusInput() {
         guard let webView = webView else { return }
-        webView.evaluateJavaScript(focusInputScript, completionHandler: nil)
+        webView.evaluateJavaScript(PromptInjector.focusInputScript, completionHandler: nil)
     }
 
     deinit {
@@ -292,24 +278,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     /// Triggers a new chat by emulating Shift+Cmd+O (Google's shortcut)
     private func openNewChat() {
         guard let webView = webView else { return }
-        let script = """
-        (function() {
-            const event = new KeyboardEvent('keydown', {
-                key: 'O',
-                code: 'KeyO',
-                keyCode: 79,
-                which: 79,
-                shiftKey: true,
-                metaKey: true,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-            document.activeElement.dispatchEvent(event);
-            document.dispatchEvent(event);
-        })();
-        """
-        webView.evaluateJavaScript(script) { [weak self] _, _ in
+        PromptInjector.newChat(in: webView) { [weak self] in
             // Reset to initial size since we're starting a new chat
             self?.resetToInitialSize()
         }

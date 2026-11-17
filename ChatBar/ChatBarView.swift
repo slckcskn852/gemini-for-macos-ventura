@@ -57,6 +57,7 @@ class WindowDragNSView: NSView {
 
 struct ChatBarView: View {
     let webView: WKWebView
+    let coordinator: AppCoordinator
     let onExpandToMain: () -> Void
 
     /// Calculate button offset based on screen height
@@ -94,6 +95,8 @@ struct ChatBarView: View {
                         .frame(width: Constants.dragRegionLeading)
                     WindowDragView()
                         .frame(maxWidth: .infinity, maxHeight: Constants.dragRegionHeight)
+                    ContextMenuButton(coordinator: coordinator)
+                        .frame(height: Constants.dragRegionHeight)
                     Spacer()
                         .frame(width: Constants.dragRegionTrailing)
                 }
@@ -103,10 +106,59 @@ struct ChatBarView: View {
         }
     }
 
-    private enum Constants {
+    fileprivate enum Constants {
         static let dragRegionLeading: CGFloat = 160  // skip past expand button + "Gemini" text
         static let dragRegionTrailing: CGFloat = 120  // skip past PRO badge + avatar
         static let dragRegionHeight: CGFloat = 38
         static let dragRegionTopPadding: CGFloat = 16
+    }
+}
+
+/// "Share screen / talk" button shown in the chat bar's top bar, mirroring the
+/// context-sharing controls of Google's official Mac app.
+struct ContextMenuButton: View {
+    let coordinator: AppCoordinator
+
+    var body: some View {
+        Menu {
+            Button {
+                coordinator.shareContext(.window(pid: coordinator.lastExternalApp?.processIdentifier))
+            } label: {
+                Label(windowTitle, systemImage: "macwindow.on.rectangle")
+            }
+            Button {
+                coordinator.shareContext(.area)
+            } label: {
+                Label("Share Screen Area…", systemImage: "rectangle.dashed")
+            }
+            Button {
+                coordinator.shareContext(.screen)
+            } label: {
+                Label("Share Entire Screen", systemImage: "display")
+            }
+            Divider()
+            Button {
+                coordinator.startVoiceInput()
+            } label: {
+                Label("Talk to Gemini", systemImage: "mic")
+            }
+        } label: {
+            Image(systemName: "plus.viewfinder")
+                .font(.system(size: 14, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .help("Share your screen or talk to Gemini")
+    }
+
+    private var windowTitle: String {
+        if let name = coordinator.lastExternalApp?.localizedName {
+            return "Share \(name) Window"
+        }
+        return "Share Active Window"
     }
 }

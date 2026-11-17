@@ -18,8 +18,7 @@ class ConsoleLogHandler: NSObject, WKScriptMessageHandler {
 }
 
 /// Observable wrapper around WKWebView with Gemini-specific functionality
-@Observable
-class WebViewModel {
+final class WebViewModel: ObservableObject {
 
     // MARK: - Constants
 
@@ -35,10 +34,10 @@ class WebViewModel {
     // MARK: - Public Properties
 
     let wkWebView: WKWebView
-    private(set) var canGoBack: Bool = false
-    private(set) var canGoForward: Bool = false
-    private(set) var isAtHome: Bool = true
-    private(set) var isLoading: Bool = true
+    @Published private(set) var canGoBack: Bool = false
+    @Published private(set) var canGoForward: Bool = false
+    @Published private(set) var isAtHome: Bool = true
+    @Published private(set) var isLoading: Bool = true
 
     // MARK: - Private Properties
 
@@ -78,35 +77,18 @@ class WebViewModel {
     }
 
     func openNewChat() {
-        let script = """
-        (function() {
-            const event = new KeyboardEvent('keydown', {
-                key: 'O',
-                code: 'KeyO',
-                keyCode: 79,
-                which: 79,
-                shiftKey: true,
-                metaKey: true,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-            document.activeElement.dispatchEvent(event);
-            document.dispatchEvent(event);
-        })();
-        """
-        wkWebView.evaluateJavaScript(script, completionHandler: nil)
+        PromptInjector.newChat(in: wkWebView)
     }
 
     // MARK: - Zoom
 
     func zoomIn() {
-        let newZoom = min((wkWebView.pageZoom * 100 + 1).rounded() / 100, Self.maxZoom)
+        let newZoom = min((wkWebView.pageZoom * 100 + 5).rounded() / 100, Self.maxZoom)
         setZoom(newZoom)
     }
 
     func zoomOut() {
-        let newZoom = max((wkWebView.pageZoom * 100 - 1).rounded() / 100, Self.minZoom)
+        let newZoom = max((wkWebView.pageZoom * 100 - 5).rounded() / 100, Self.minZoom)
         setZoom(newZoom)
     }
 
@@ -133,11 +115,16 @@ class WebViewModel {
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.preferences.isElementFullscreenEnabled = true
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
         // Add user scripts
         for script in UserScripts.createAllScripts() {
             configuration.userContentController.addUserScript(script)
         }
+
+        // Bridge for "response finished" notifications
+        configuration.userContentController.add(ResponseNotifier.shared, name: ResponseNotifier.messageHandlerName)
 
         // Register console log message handler (debug only)
         #if DEBUG
@@ -147,7 +134,14 @@ class WebViewModel {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsLinkPreview = true
+        webView.allowsMagnification = true
         webView.customUserAgent = userAgent
+
+        #if DEBUG
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
+        #endif
 
         let savedZoom = UserDefaults.standard.double(forKey: UserDefaultsKeys.pageZoom.rawValue)
         webView.pageZoom = savedZoom > 0 ? savedZoom : defaultPageZoom

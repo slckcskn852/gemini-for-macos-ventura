@@ -21,6 +21,8 @@ enum UserDefaultsKeys: String {
     case panelX
     case panelY
     case alwaysOnTop
+    case notifyOnResponse
+    case hotKeyPrefix = "hotKey."
 }
 
 enum AppTheme: String, CaseIterable {
@@ -66,8 +68,37 @@ enum UserAgentOption: String, CaseIterable {
         }
     }
 
-    static let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-    static let chromeUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+    /// Version of the Safari/WebKit actually installed on this Mac (e.g. "18.6").
+    /// Advertising the real engine version keeps Google from serving features
+    /// the embedded WebKit can't handle (important on older macOS releases).
+    static let installedSafariVersion: String = {
+        let plist = "/Applications/Safari.app/Contents/Info.plist"
+        if let dict = NSDictionary(contentsOfFile: plist),
+           let version = dict["CFBundleShortVersionString"] as? String {
+            let parts = version.split(separator: ".").prefix(2)
+            if !parts.isEmpty { return parts.joined(separator: ".") }
+        }
+        return "18.0"
+    }()
+
+    /// A Chrome major version that tracks Chrome's 4-week release cadence so
+    /// the string never goes stale (Chrome 132 shipped 2025-01-14).
+    static let estimatedChromeMajor: Int = {
+        var components = DateComponents()
+        components.year = 2025; components.month = 1; components.day = 14
+        guard let anchor = Calendar(identifier: .gregorian).date(from: components) else { return 140 }
+        let days = Date().timeIntervalSince(anchor) / 86_400
+        // Stay one release behind stable to be conservative.
+        return max(132, 132 + Int(days / 28) - 1)
+    }()
+
+    // Real Safari always reports "Intel Mac OS X 10_15_7", even on Apple Silicon.
+    static var safariUA: String {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(installedSafariVersion) Safari/605.1.15"
+    }
+    static var chromeUA: String {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/\(estimatedChromeMajor).0.0.0 Safari/537.36"
+    }
 
     func userAgentString(custom: String = "") -> String {
         switch self {
@@ -79,8 +110,8 @@ enum UserAgentOption: String, CaseIterable {
 
     func settingsDescription(custom: String = "") -> String {
         switch self {
-        case .safari: return "Identifies as Safari 26.0 on macOS"
-        case .chrome: return "Identifies as Chrome 134 on macOS"
+        case .safari: return "Identifies as Safari \(Self.installedSafariVersion) (the WebKit version installed on this Mac). Recommended."
+        case .chrome: return "Identifies as Chrome \(Self.estimatedChromeMajor) on macOS. May unlock web features WebKit can't run."
         case .custom: return custom.isEmpty ? "No custom user agent set — falls back to Safari" : "Using custom user agent string"
         }
     }

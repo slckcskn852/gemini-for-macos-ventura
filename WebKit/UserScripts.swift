@@ -16,7 +16,8 @@ enum UserScripts {
     /// Creates all user scripts to be injected into the WebView
     static func createAllScripts() -> [WKUserScript] {
         var scripts: [WKUserScript] = [
-            createIMEFixScript()
+            createIMEFixScript(),
+            WKUserScript(source: responseWatcherSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         ]
 
         #if DEBUG
@@ -46,6 +47,42 @@ enum UserScripts {
     }
 
     // MARK: - Script Sources
+
+    /// Watches for Gemini finishing a response (the "Stop response" button
+    /// disappearing) and tells the native side so it can post a notification.
+    private static let responseWatcherSource = """
+    (function() {
+        'use strict';
+        if (window.__geminiDesktopWatcher) { return; }
+        window.__geminiDesktopWatcher = true;
+
+        let generating = false;
+        function isGenerating() {
+            return !!document.querySelector(
+                'button[aria-label="Stop response"], button[aria-label*="Stop generating" i], ' +
+                'button.send-button.stop, mat-icon[fonticon="stop"], .stop-icon'
+            );
+        }
+        function latestResponsePreview() {
+            const nodes = document.querySelectorAll('message-content, model-response');
+            if (!nodes.length) { return ''; }
+            const text = (nodes[nodes.length - 1].innerText || '').replace(/\\s+/g, ' ').trim();
+            return text.length > 180 ? text.slice(0, 177) + '…' : text;
+        }
+        setInterval(function() {
+            const now = isGenerating();
+            if (generating && !now) {
+                try {
+                    window.webkit.messageHandlers.\(ResponseNotifier.messageHandlerName).postMessage({
+                        type: 'responseFinished',
+                        preview: latestResponsePreview()
+                    });
+                } catch (e) {}
+            }
+            generating = now;
+        }, 1000);
+    })();
+    """
 
     /// JavaScript to bridge console.log to native Swift via WKScriptMessageHandler
     private static let consoleLogBridgeSource = """

@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		74CBD8C02EED900000F226E3 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 74CBD8BF2EED900000F226E3 /* KeyboardShortcuts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -107,6 +106,11 @@
 			path = ChatBar;
 			sourceTree = "<group>";
 		};
+		7452D5002F10000000EDD8A4 /* Features */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Features;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -114,7 +118,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				74CBD8C02EED900000F226E3 /* KeyboardShortcuts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -129,6 +132,7 @@
 				749D25E32EEE2C330054BA29 /* ChatBar */,
 				7452D4CF2EF08E5D00EDD8A4 /* WebKit */,
 				749D25E12EEE2C330054BA29 /* Views */,
+				7452D5002F10000000EDD8A4 /* Features */,
 				749D25DC2EEE2C330054BA29 /* Utils */,
 				749D25DA2EEE2C330054BA29 /* Resources */,
 				74CBD8AB2EED8FCB00F226E3 /* Products */,
@@ -161,10 +165,10 @@
 			fileSystemSynchronizedGroups = (
 				7452D4CF2EF08E5D00EDD8A4 /* WebKit */,
 				749D25E12EEE2C330054BA29 /* Views */,
+				7452D5002F10000000EDD8A4 /* Features */,
 			);
 			name = GeminiDesktop;
 			packageProductDependencies = (
-				74CBD8BF2EED900000F226E3 /* KeyboardShortcuts */,
 			);
 			productName = GeminiDesktop;
 			productReference = 74CBD8AA2EED8FCB00F226E3 /* Gemini Desktop.app */;
@@ -194,9 +198,6 @@
 			);
 			mainGroup = 74CBD8A12EED8FCA00F226E3;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-				74CBD8BE2EED900000F226E3 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 74CBD8AB2EED8FCB00F226E3 /* Products */;
 			projectDirPath = "";
@@ -282,7 +283,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -341,7 +342,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -360,10 +361,10 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -389,8 +390,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.1;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alexcding.geminidesktop;
 				PRODUCT_NAME = "Gemini Desktop";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -411,11 +412,11 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = 8Z3UH5979Z;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -441,8 +442,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.1;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alexcding.geminidesktop;
 				PRODUCT_NAME = "Gemini Desktop";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -477,24 +478,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		74CBD8BE2EED900000F226E3 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		74CBD8BF2EED900000F226E3 /* KeyboardShortcuts */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 74CBD8BE2EED900000F226E3 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
-			productName = KeyboardShortcuts;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 74CBD8A22EED8FCA00F226E3 /* Project object */;
 }

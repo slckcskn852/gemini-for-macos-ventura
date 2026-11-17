@@ -8,26 +8,74 @@
 import SwiftUI
 import AppKit
 import WebKit
+import Combine
 
 extension Notification.Name {
     static let openMainWindow = Notification.Name("openMainWindow")
 }
 
-@Observable
-class AppCoordinator {
+final class AppCoordinator: ObservableObject {
+    static let shared = AppCoordinator()
+
     private var chatBar: ChatBarPanel?
-    var webViewModel = WebViewModel()
+    let webViewModel = WebViewModel()
 
     var openWindowAction: ((String) -> Void)?
-    var alwaysOnTop: Bool = UserDefaults.standard.bool(forKey: UserDefaultsKeys.alwaysOnTop.rawValue)
+    @Published var alwaysOnTop: Bool = UserDefaults.standard.bool(forKey: UserDefaultsKeys.alwaysOnTop.rawValue)
 
     var canGoBack: Bool { webViewModel.canGoBack }
     var canGoForward: Bool { webViewModel.canGoForward }
 
-    init() {
+    /// The last app the user worked in before switching to Gemini — used for
+    /// "Ask About Active Window".
+    private(set) var lastExternalApp: NSRunningApplication?
+
+    private var cancellables = Set<AnyCancellable>()
+
+    private init() {
+        // Re-publish web view state changes so SwiftUI views observing the coordinator update.
+        webViewModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
         // Observe notifications for window opening
         NotificationCenter.default.addObserver(forName: .openMainWindow, object: nil, queue: .main) { [weak self] _ in
             self?.openMainWindow()
+        }
+
+        // Track the front-most app that isn't us.
+        lastExternalApp = Self.frontmostExternalApp()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self?.lastExternalApp = app
+        }
+
+        ResponseNotifier.shared.isGeminiVisibleToUser = { [weak self] in
+            self?.isGeminiVisibleToUser ?? false
+        }
+        ResponseNotifier.shared.onNotificationClicked = { [weak self] in
+            self?.openMainWindow()
+        }
+    }
+
+    private static func frontmostExternalApp() -> NSRunningApplication? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        return app
+    }
+
+    // MARK: - Global shortcuts
+
+    func handle(_ action: HotKeyAction) {
+        switch action {
+        case .toggleChatBar: toggleChatBar()
+        case .openMainWindow: openMainWindow()
+        case .shareWindow: shareContext(.window(pid: lastExternalApp?.processIdentifier))
+        case .shareArea: shareContext(.area)
+        case .voiceInput: startVoiceInput()
         }
     }
 
@@ -64,6 +112,84 @@ class AppCoordinator {
         // Chat bar panel is always floating by design
     }
 
+    // MARK: - Visibility
+
+    var isChatBarVisible: Bool { chatBar?.isVisible == true }
+
+    var isMainWindowVisible: Bool { findMainWindow()?.isVisible == true }
+
+    /// True when the user can currently see a Gemini surface.
+    var isGeminiVisibleToUser: Bool {
+        if isChatBarVisible { return true }
+        if let main = findMainWindow(), main.isVisible, NSApp.isActive,
+           main.occlusionState.contains(.visible) {
+            return true
+        }
+        return false
+    }
+
+    /// Makes sure a Gemini surface is visible (keeps the main window if it's
+    /// already up, otherwise shows the quick chat bar), then runs `then`.
+    func revealGemini(preferMain: Bool = false, then: (() -> Void)? = nil) {
+        if preferMain || isMainWindowVisible {
+            openMainWindow()
+        } else {
+            showChatBar()
+        }
+        // Give the shared WKWebView a moment to re-attach to the new window.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { then?() }
+    }
+
+    // MARK: - Screen context, voice & prompts
+
+    /// Captures screen context and attaches it to the prompt.
+    func shareContext(_ mode: ScreenCapture.Mode) {
+        guard ScreenCapture.ensurePermission() else { return }
+
+        let preferMain = isMainWindowVisible && NSApp.isActive
+        // Keep our own UI out of the screenshot.
+        hideChatBar()
+        if case .window = mode {} else if preferMain {
+            findMainWindow()?.orderOut(nil)
+        }
+
+        // Small delay so the hidden windows are gone before capturing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            ScreenCapture.capture(mode) { [weak self] png in
+                guard let self = self else { return }
+                guard let png = png else {
+                    self.revealGemini(preferMain: preferMain)
+                    return
+                }
+                self.revealGemini(preferMain: preferMain) {
+                    PromptInjector.attachImage(png, into: self.webViewModel.wkWebView)
+                }
+            }
+        }
+    }
+
+    /// Opens Gemini and starts voice input.
+    func startVoiceInput() {
+        revealGemini {
+            PromptInjector.startVoiceInput(in: self.webViewModel.wkWebView)
+        }
+    }
+
+    /// Puts text in the prompt box (optionally in a fresh chat) and optionally sends it.
+    func ask(_ text: String, submit: Bool = false, newChat: Bool = false) {
+        revealGemini {
+            let webView = self.webViewModel.wkWebView
+            let insert = { PromptInjector.insertText(text, into: webView, submit: submit) }
+            if newChat {
+                PromptInjector.newChat(in: webView) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: insert)
+                }
+            } else {
+                insert()
+            }
+        }
+    }
+
     // MARK: - Chat Bar
 
     func showChatBar() {
@@ -84,6 +210,7 @@ class AppCoordinator {
 
         let contentView = ChatBarView(
             webView: webViewModel.wkWebView,
+            coordinator: self,
             onExpandToMain: { [weak self] in
                 self?.expandToMainWindow()
             }
@@ -191,10 +318,23 @@ class AppCoordinator {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Opens the Settings window on every supported macOS version.
+    func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        // Prefer the app menu's own "Settings…" item; works on macOS 13 and later.
+        if let appMenu = NSApp.mainMenu?.items.first?.submenu,
+           let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command }) {
+            appMenu.performActionForItem(at: index)
+            return
+        }
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
     /// Finds the main window by identifier or title
     private func findMainWindow() -> NSWindow? {
         NSApp.windows.first {
-            $0.identifier?.rawValue == Constants.mainWindowIdentifier || $0.title == Constants.mainWindowTitle
+            !($0 is NSPanel) &&
+            ($0.identifier?.rawValue == Constants.mainWindowIdentifier || $0.title == Constants.mainWindowTitle)
         }
     }
 

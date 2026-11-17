@@ -1,13 +1,16 @@
 #!/bin/bash
 
 # Create DMG for Gemini Desktop
-# Usage: ./scripts/create-dmg.sh
+# Usage: ./scripts/create-dmg.sh   (run ./scripts/build-app.sh first;
+#        use ./scripts/build-app.sh --universal for a DMG that runs on every Mac)
 
 set -e
 
+cd "$(dirname "$0")/.."
+
 APP_NAME="Gemini Desktop"
-APP_PATH="$HOME/Downloads/GeminiDesktop/${APP_NAME}.app"
-OUTPUT_DIR="$HOME/Downloads/GeminiDesktop"
+APP_PATH="$(pwd)/build/${APP_NAME}.app"
+OUTPUT_DIR="$(pwd)/build"
 DMG_FINAL="${OUTPUT_DIR}/GeminiDesktop.dmg"
 VOLUME_NAME="Gemini Desktop"
 
@@ -15,7 +18,7 @@ echo "Creating DMG for ${APP_NAME}..."
 
 # Check if app exists
 if [ ! -d "$APP_PATH" ]; then
-    echo "Error: App not found at ${APP_PATH}"
+    echo "Error: App not found at ${APP_PATH} — run ./scripts/build-app.sh first"
     exit 1
 fi
 

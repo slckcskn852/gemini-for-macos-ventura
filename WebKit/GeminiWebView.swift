@@ -36,6 +36,35 @@ struct GeminiWebView: NSViewRepresentable {
             return nil
         }
 
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // <a download> links (e.g. "Download image" on generated images)
+            if navigationAction.shouldPerformDownload {
+                decisionHandler(.download)
+                return
+            }
+            // mailto:, tel:, facetime: etc. go to the system handler
+            if let url = navigationAction.request.url, let scheme = url.scheme?.lowercased(),
+               !["http", "https", "about", "blob", "data", "javascript"].contains(scheme) {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
+            // Cmd-click opens links in the default browser
+            if navigationAction.modifierFlags.contains(.command),
+               navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url {
+                NSWorkspace.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
+        /// Recover automatically if the web content process crashes (e.g. memory pressure).
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            webView.reload()
+        }
+
         func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
             if navigationResponse.canShowMIMEType {
                 decisionHandler(.allow)
@@ -136,7 +165,7 @@ struct GeminiWebView: NSViewRepresentable {
         private func isExternalURL(_ url: URL) -> Bool {
             guard let host = url.host?.lowercased() else { return false }
             // Only Gemini-related domains stay in the app
-            let internalHosts = ["gemini.google.com", "accounts.google.com"]
+            let internalHosts = ["gemini.google.com", "accounts.google.com", "accounts.youtube.com"]
             let internalSuffixes = [".googleapis.com", ".gstatic.com"]
 
             if internalHosts.contains(host) { return false }

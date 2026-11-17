@@ -186,6 +186,7 @@ class WebViewContainer: NSView {
     private var revealedGeneration = 0
     private var revealFallbackWorkItem: DispatchWorkItem?
     private var lastBoundsSize: NSSize = .zero
+    private var pendingAttachSourceSize: NSSize?
     private var unfreezeWorkItem: DispatchWorkItem?
 
     private static let quickChatDarkBackgroundColor = NSColor(srgbRed: 13.0 / 255.0, green: 13.0 / 255.0, blue: 16.0 / 255.0, alpha: 1.0)
@@ -271,7 +272,7 @@ class WebViewContainer: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         lastBoundsSize = bounds.size
-        scheduleUnfreeze(after: 0.18, expectedGeneration: nil)
+        scheduleUnfreeze(after: 0.18)
     }
 
     override func layout() {
@@ -292,7 +293,11 @@ class WebViewContainer: NSView {
                 let becameNonZero = lastBoundsSize == .zero
                 lastBoundsSize = bounds.size
                 if (jumped || becameNonZero), (window?.isVisible == true || !coverView.isHidden) {
-                    hideForRelayoutAndSettle(targetSize: bounds.size)
+                    let isCrossSize = jumped || (pendingAttachSourceSize.map {
+                        abs(bounds.width - $0.width) > 80 || abs(bounds.height - $0.height) > 80
+                    } ?? false)
+                    pendingAttachSourceSize = nil
+                    hideForRelayoutAndSettle(targetSize: bounds.size, isCrossSize: isCrossSize)
                 }
             }
         }
@@ -309,16 +314,13 @@ class WebViewContainer: NSView {
         CATransaction.commit()
     }
 
-    private func scheduleUnfreeze(after delay: TimeInterval, expectedGeneration: Int?) {
+    private func scheduleUnfreeze(after delay: TimeInterval) {
         unfreezeWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self,
                   self.webView.superview === self,
                   !self.inLiveResize else { return }
-            if let expectedGeneration = expectedGeneration, expectedGeneration != self.revealGeneration {
-                return
-            }
-            self.webView.evaluateJavaScript(#"document.documentElement.classList.remove('gd-noanim');"#, completionHandler: nil)
+            self.webView.evaluateJavaScript(Self.unfreezeLayoutScript, completionHandler: nil)
         }
         unfreezeWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -332,6 +334,9 @@ class WebViewContainer: NSView {
         unfreezeWorkItem?.cancel()
         unfreezeWorkItem = nil
         revealGeneration += 1
+
+        let previousSize = webView.frame.size
+        pendingAttachSourceSize = (previousSize.width > 10 && previousSize.height > 10) ? previousSize : nil
 
         showCoverImmediately()
 
@@ -349,11 +354,15 @@ class WebViewContainer: NSView {
 
         lastBoundsSize = bounds.size
         if bounds.width > 10 && bounds.height > 10 {
-            hideForRelayoutAndSettle(targetSize: bounds.size)
+            let isCrossSize = pendingAttachSourceSize.map {
+                abs(bounds.width - $0.width) > 80 || abs(bounds.height - $0.height) > 80
+            } ?? false
+            pendingAttachSourceSize = nil
+            hideForRelayoutAndSettle(targetSize: bounds.size, isCrossSize: isCrossSize)
         }
     }
 
-    private func hideForRelayoutAndSettle(targetSize: NSSize) {
+    private func hideForRelayoutAndSettle(targetSize: NSSize, isCrossSize: Bool) {
         revealFallbackWorkItem?.cancel()
         revealFallbackWorkItem = nil
         unfreezeWorkItem?.cancel()
@@ -374,13 +383,17 @@ class WebViewContainer: NSView {
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: fallback)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
             self?.pollUntilSettled(
                 generation: generation,
                 targetSize: targetSize,
+                isCrossSize: isCrossSize,
+                startUptime: startUptime,
                 attempt: 0,
+                baselineSignature: nil,
                 lastSignature: nil,
                 stableCount: 0
             )
@@ -389,11 +402,16 @@ class WebViewContainer: NSView {
 
     /// Polls layout signature across bounded IPC round-trips so WebKit flushes layout and paints
     /// new-size `TiledCoreAnimationDrawingArea` tiles underneath the opaque `coverView` while
-    /// `webView.alphaValue == 1.0`, running zero timers once revealed.
+    /// `webView.alphaValue == 1.0`. On cross-size (`>80px`) transitions, waits for Angular's
+    /// breakpoint relayout (`signature != baselineSignature || elapsed >= 0.85`, with a `0.45s`
+    /// minimum floor) and visible `opacity` readiness before revealing, leaving zero idle timers.
     private func pollUntilSettled(
         generation: Int,
         targetSize: NSSize,
+        isCrossSize: Bool,
+        startUptime: TimeInterval,
         attempt: Int,
+        baselineSignature: String?,
         lastSignature: String?,
         stableCount: Int
     ) {
@@ -411,37 +429,63 @@ class WebViewContainer: NSView {
                   self.revealedGeneration != generation,
                   self.webView.superview === self else { return }
 
+            let nowElapsed = ProcessInfo.processInfo.systemUptime - startUptime
+            var nextBaseline = baselineSignature
             let nextSignature: String?
             let stable: Int
+
             if error == nil, let signature = result as? String {
-                let parts = signature.split(separator: ",").prefix(3).compactMap {
+                let parts = signature.split(separator: ",").prefix(4).compactMap {
                     Double($0).map { Int($0.rounded()) }
                 }
                 let w = parts.count > 0 ? parts[0] : 0
                 let h = parts.count > 1 ? parts[1] : 0
                 let sidenavOpen = parts.count > 2 ? parts[2] : 0
+                let opqOk = parts.count > 3 ? parts[3] : 1
 
-                let sizeMatched = parts.count >= 2 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
-                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || attempt >= 8
-                stable = (sizeMatched && sidebarReady && signature == lastSignature) ? (stableCount + 1) : 0
+                let sizeMatched = parts.count >= 4 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
+                if sizeMatched {
+                    if nextBaseline == nil {
+                        nextBaseline = signature
+                    } else if sidenavOpen == 0, nowElapsed < 0.35,
+                              nextBaseline?.split(separator: ",").dropFirst(2).first == "1" {
+                        // Refresh baseline once Quick Chat's early sidebar close finishes so
+                        // `signature != nextBaseline` still detects Angular's later breakpoint switch.
+                        nextBaseline = signature
+                    }
+                }
+
+                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 0.90
+                let opacityReady = opqOk == 1 || nowElapsed >= 0.95
+                let floorReady = !isCrossSize || nowElapsed >= 0.45
+                let changedReady = !isCrossSize || (nextBaseline != nil && signature != nextBaseline!) || nowElapsed >= 0.85
+
+                if sizeMatched && sidebarReady && opacityReady && floorReady && changedReady && signature == lastSignature {
+                    stable = stableCount + 1
+                } else {
+                    stable = 0
+                }
                 nextSignature = signature
             } else {
                 stable = 0
                 nextSignature = nil
             }
 
-            if stable >= 2 || attempt >= 14 {
+            if stable >= 2 || attempt >= 28 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) { [weak self] in
                     self?.revealIfNeeded(generation: generation)
                 }
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
                 self?.pollUntilSettled(
                     generation: generation,
                     targetSize: targetSize,
+                    isCrossSize: isCrossSize,
+                    startUptime: startUptime,
                     attempt: attempt + 1,
+                    baselineSignature: nextBaseline,
                     lastSignature: nextSignature,
                     stableCount: stable
                 )
@@ -456,6 +500,7 @@ class WebViewContainer: NSView {
         revealedGeneration = generation
         revealFallbackWorkItem?.cancel()
         revealFallbackWorkItem = nil
+        webView.evaluateJavaScript(Self.unfreezeLayoutScript, completionHandler: nil)
         fadeInWebView(generation: generation)
     }
 
@@ -467,23 +512,57 @@ class WebViewContainer: NSView {
         }, completionHandler: { [weak self] in
             guard let self = self, generation == self.revealGeneration else { return }
             self.coverView.isHidden = true
-            self.scheduleUnfreeze(after: 0.08, expectedGeneration: generation)
         })
     }
 
     static let layoutSignatureScript = #"""
     (function() {
         var sidenavOpen = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded') ? 1 : 0;
-        var sel = ['input-container', 'rich-textarea', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container', 'h1'];
-        var out = [window.innerWidth, window.innerHeight, sidenavOpen];
+        var fadeSel = ['bard-mode-switcher', '.input-area-container', '.static-sparkle-container', 'h1', '.lm-fade-in-up-animation', '.fade-in-animation'];
+        var opqOk = 1;
+        for (var j = 0; j < fadeSel.length; j++) {
+            var nodes = document.querySelectorAll(fadeSel[j]);
+            for (var k = 0; k < nodes.length; k++) {
+                var nr = nodes[k].getBoundingClientRect();
+                if (nr.width > 0 && nr.height > 0) {
+                    var ncs = getComputedStyle(nodes[k]);
+                    if (ncs.visibility !== 'hidden' && parseFloat(ncs.opacity) < 0.95) {
+                        opqOk = 0;
+                        break;
+                    }
+                }
+            }
+            if (!opqOk) break;
+        }
+        var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', 'mat-sidenav', '.zero-state-container', '.static-sparkle-container', 'h1', '.fade-in-animation'];
+        var out = [window.innerWidth, window.innerHeight, sidenavOpen, opqOk];
         for (var i = 0; i < sel.length; i++) {
             var el = document.querySelector(sel[i]);
             if (el) {
                 var r = el.getBoundingClientRect();
-                out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
+                var cs = getComputedStyle(el);
+                out.push(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height), Math.round(parseFloat(cs.opacity) * 100));
+            } else {
+                out.push(-1);
             }
         }
         return out.join(',');
+    })();
+    """#
+
+    private static let unfreezeLayoutScript = #"""
+    (function() {
+        document.documentElement.classList.remove('gd-noanim');
+        var st = document.getElementById('gd-noanim-style');
+        if (st) st.remove();
+        if (document.getAnimations) {
+            var anims = document.getAnimations();
+            for (var i = 0; i < anims.length; i++) {
+                var a = anims[i];
+                if (a.effect && a.effect.getComputedTiming && a.effect.getComputedTiming().iterations === Infinity) continue;
+                try { a.finish(); } catch (e) {}
+            }
+        }
     })();
     """#
 
@@ -492,11 +571,16 @@ class WebViewContainer: NSView {
         if (!document.getElementById('gd-noanim-style')) {
             var st = document.createElement('style');
             st.id = 'gd-noanim-style';
-            st.textContent = 'html.gd-noanim .mat-drawer, html.gd-noanim .mat-drawer-content, html.gd-noanim .mat-drawer-backdrop,' +
-              'html.gd-noanim bard-sidenav, html.gd-noanim bard-sidenav *, html.gd-noanim side-navigation-v2, html.gd-noanim side-navigation-v2 *,' +
-              'html.gd-noanim chat-window, html.gd-noanim .conversation-container, html.gd-noanim input-container,' +
-              'html.gd-noanim .zero-state-container, html.gd-noanim .zero-state-container *, html.gd-noanim .lm-fade-in-up-animation, html.gd-noanim .fade-in-animation,' +
-              'html.gd-noanim user-query, html.gd-noanim model-response { transition: none !important; animation: none !important; }';
+            st.textContent = 'html.gd-noanim chat-window, html.gd-noanim chat-window-content, html.gd-noanim .conversation-container,' +
+              'html.gd-noanim input-container, html.gd-noanim .input-area-container, html.gd-noanim input-area-v2, html.gd-noanim rich-textarea,' +
+              'html.gd-noanim bard-mode-switcher, html.gd-noanim bard-mode-switcher *,' +
+              'html.gd-noanim .zero-state-container, html.gd-noanim .zero-state-container *, html.gd-noanim modular-zero-state, html.gd-noanim zero-state,' +
+              'html.gd-noanim zero-state-suggestions, html.gd-noanim zero-state-suggestions *, html.gd-noanim .static-sparkle-container,' +
+              'html.gd-noanim .lm-fade-in-up-animation, html.gd-noanim .fade-in-animation, html.gd-noanim h1,' +
+              'html.gd-noanim user-query, html.gd-noanim model-response,' +
+              'html.gd-noanim .mat-drawer, html.gd-noanim .mat-drawer-content, html.gd-noanim .mat-drawer-backdrop,' +
+              'html.gd-noanim bard-sidenav, html.gd-noanim bard-sidenav *, html.gd-noanim side-navigation-v2, html.gd-noanim side-navigation-v2 * ' +
+              '{ transition-duration: 0s !important; transition-delay: 0s !important; animation-duration: 1ms !important; animation-delay: 0s !important; }';
             (document.head || document.documentElement).appendChild(st);
         }
         document.documentElement.classList.add('gd-noanim');

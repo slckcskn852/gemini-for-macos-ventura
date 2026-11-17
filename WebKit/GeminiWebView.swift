@@ -247,7 +247,7 @@ class WebViewContainer: NSView {
 
         revealGeneration += 1
         let generation = revealGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             self?.revealWhenLayoutSettles(generation: generation, attempt: 0, lastSignature: nil, stableCount: 0)
         }
     }
@@ -262,11 +262,11 @@ class WebViewContainer: NSView {
             guard let self = self, generation == self.revealGeneration else { return }
             let signature = result as? String ?? ""
             let stable = signature == lastSignature ? stableCount + 1 : 0
-            // Stable for 3 consecutive frames (~120 ms), or give up after ~900 ms.
-            if stable >= 3 || attempt >= 22 {
+            // Unchanged across two consecutive frames, or give up after ~350 ms.
+            if stable >= 1 || attempt >= 20 {
                 self.fadeInWebView()
             } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) {
                     self.revealWhenLayoutSettles(generation: generation, attempt: attempt + 1, lastSignature: signature, stableCount: stable)
                 }
             }
@@ -275,7 +275,7 @@ class WebViewContainer: NSView {
 
     private func fadeInWebView() {
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
+            ctx.duration = 0.1
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             webView.animator().alphaValue = 1
         }

@@ -1,4 +1,10 @@
-# Gemini Desktop for macOS (Unofficial)
+# Gemini for MacOS Ventura
+
+> **Built for Intel Macs that are stuck on macOS 13 Ventura and no longer get macOS updates.**
+> Google's official Gemini Mac app needs Apple Silicon and macOS 15+, so these Macs can't run it.
+> This app gives you the same desktop Gemini experience. It also runs on Apple Silicon and newer macOS (it's a universal app), but if your Mac can run the official app, use that instead.
+
+*Fork of [alexcding/gemini-desktop-mac](https://github.com/alexcding/gemini-desktop-mac), an unofficial Gemini desktop wrapper.*
 
 An **unofficial macOS desktop wrapper** for Google Gemini. It's a lightweight native app that loads the official Gemini website, and it adds the desktop features of Google's own Mac app.
 
@@ -77,8 +83,8 @@ Example: `open "geminidesktop://ask?q=Summarize%20my%20clipboard&send=1"`
 
 ```bash
 xcode-select --install          # one time: installs the free Command Line Tools
-git clone https://github.com/alexcding/gemini-desktop-mac.git
-cd gemini-desktop-mac
+git clone https://github.com/slckcskn852/gemini-for-macos-ventura.git
+cd gemini-for-macos-ventura
 ./scripts/build-app.sh --install   # builds, copies to /Applications and launches
 ```
 

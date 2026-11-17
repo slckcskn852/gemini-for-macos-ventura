@@ -81,7 +81,7 @@ struct ChatBarView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .translucentButtonChrome(in: Circle())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -151,7 +151,7 @@ struct ContextMenuButton: View {
         .fixedSize()
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: Capsule())
+        .translucentButtonChrome(in: Capsule())
         .help("Share your screen or talk to Gemini")
     }
 
@@ -160,5 +160,15 @@ struct ContextMenuButton: View {
             return "Share \(name) Window"
         }
         return "Share Active Window"
+    }
+}
+
+private extension View {
+    /// Translucent pill/circle chrome without WindowServer backdrop blurs over the WebView.
+    func translucentButtonChrome<S: InsettableShape>(in shape: S) -> some View {
+        self
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.85), in: shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
     }
 }

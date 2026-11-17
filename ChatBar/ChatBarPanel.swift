@@ -11,42 +11,10 @@ import WebKit
 
 class ChatBarPanel: NSPanel, NSWindowDelegate {
 
-    private var initialSize: NSSize {
-        let width = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelWidth.rawValue)
-        let height = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelHeight.rawValue)
-        return NSSize(
-            width: width >= Constants.minWidth ? width : Constants.defaultWidth,
-            height: height >= Constants.minHeight ? height : Constants.defaultHeight
-        )
-    }
-
-    /// Returns the screen where this panel is currently located
-    private var currentScreen: NSScreen? {
-        let panelCenter = NSPoint(x: frame.midX, y: frame.midY)
-        return NSScreen.screen(containing: panelCenter)
-    }
-
-    // Expanded height: 70% of screen height or initial height, whichever is larger
-    private var expandedHeight: CGFloat {
-        let screenHeight = currentScreen?.visibleFrame.height ?? 800
-        return max(screenHeight * Constants.expandedScreenRatio, initialSize.height)
-    }
-
-    private var isExpanded = false
-    private var pollingTimer: Timer?
     private var positionSaveWork: DispatchWorkItem?
+    private var sizeSaveWork: DispatchWorkItem?
+    private var clickOutsideMonitor: Any?
     private weak var webView: WKWebView?
-
-    // Returns true if in a conversation (not on start page)
-    private let checkConversationScript = """
-        (function() {
-            const scroller = document.querySelector('infinite-scroller[data-test-id="chat-history-container"]');
-            if (!scroller) { return false; }
-            const hasResponseContainer = scroller.querySelector('response-container') !== null;
-            const hasRatingButtons = scroller.querySelector('[aria-label="Good response"], [aria-label="Bad response"]') !== null;
-            return hasResponseContainer || hasRatingButtons;
-        })();
-        """
 
     init(contentView: NSView) {
         let width = UserDefaults.standard.double(forKey: UserDefaultsKeys.panelWidth.rawValue)
@@ -70,23 +38,30 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
 
         configureWindow()
         configureAppearance()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.webViewSearchDelay) { [weak self] in
-            guard let self = self, let content = self.contentView else { return }
-            self.findWebView(in: content)
-            print("[ChatBar] WebView found: \(self.webView != nil)")
-            self.startPolling()
-        }
     }
 
-    private func findWebView(in view: NSView) {
+    private func resolvedWebView() -> WKWebView? {
+        if let webView = webView {
+            return webView
+        }
+        guard let contentView = contentView,
+              let found = findWebView(in: contentView) else {
+            return nil
+        }
+        webView = found
+        return found
+    }
+
+    private func findWebView(in view: NSView) -> WKWebView? {
         if let wk = view as? WKWebView {
-            self.webView = wk
-            return
+            return wk
         }
         for subview in view.subviews {
-            findWebView(in: subview)
+            if let wk = findWebView(in: subview) {
+                return wk
+            }
         }
+        return nil
     }
 
     private func configureWindow() {
@@ -100,18 +75,20 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
 
         minSize = NSSize(width: Constants.minWidth, height: Constants.minHeight)
         maxSize = NSSize(width: Constants.maxWidth, height: Constants.maxHeight)
-
-        // Add global click monitor to dismiss when clicking outside
-        setupClickOutsideMonitor()
     }
 
-    private var clickOutsideMonitor: Any?
-
-    private func setupClickOutsideMonitor() {
-        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+    private func installClickOutsideMonitor() {
+        guard clickOutsideMonitor == nil else { return }
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
             guard let self = self, self.isVisible else { return }
             self.orderOut(nil)
         }
+    }
+
+    private func removeClickOutsideMonitor() {
+        guard let monitor = clickOutsideMonitor else { return }
+        NSEvent.removeMonitor(monitor)
+        clickOutsideMonitor = nil
     }
 
     private func configureAppearance() {
@@ -128,138 +105,50 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         }
     }
 
-    private func startPolling() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.initialPollingDelay) { [weak self] in
-            self?.pollingTimer = Timer.scheduledTimer(withTimeInterval: Constants.pollingInterval, repeats: true) { [weak self] _ in
-                self?.checkForConversation()
-            }
-        }
-    }
-
-    private func checkForConversation() {
-        return // Quick Chat is full-size now; no auto-grow needed
-        guard !isExpanded else { return }
-        guard let webView = webView else { return }
-
-        webView.evaluateJavaScript(checkConversationScript) { [weak self] result, _ in
-            if let inConversation = result as? Bool, inConversation {
-                DispatchQueue.main.async {
-                    self?.expandToNormalSize()
-                }
-            }
-        }
-    }
-
-    private func expandToNormalSize() {
-        guard !isExpanded else { return }
-        isExpanded = true
-        pollingTimer?.invalidate()
-
-        let currentFrame = self.frame
-
-        // Calculate the maximum available height from the current position to the top of the screen
-        guard let screen = currentScreen else { return }
-        let visibleFrame = screen.visibleFrame
-        let maxAvailableHeight = visibleFrame.maxY - currentFrame.origin.y
-        
-        // Use the smaller of expandedHeight and available space, with some padding
-        let targetHeight = min(self.expandedHeight, maxAvailableHeight - Constants.topPadding)
-        let clampedHeight = max(targetHeight, initialSize.height) // Don't shrink below initial size
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = Constants.animationDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-
-            let newFrame = NSRect(
-                x: currentFrame.origin.x,
-                y: currentFrame.origin.y,
-                width: currentFrame.width,
-                height: clampedHeight
-            )
-            self.animator().setFrame(newFrame, display: true)
-        }
-    }
-
-    func resetToInitialSize() {
-        isExpanded = false
-        pollingTimer?.invalidate()
-
-        let currentFrame = frame
-
-        setFrame(NSRect(
-            x: currentFrame.origin.x,
-            y: currentFrame.origin.y,
-            width: currentFrame.width,
-            height: initialSize.height
-        ), display: true)
-
-        startPolling()
-    }
-
-    /// Called when panel is shown - check if we should be expanded or initial size
+    /// Called when panel is shown - focuses the prompt input
     func checkAndAdjustSize() {
-        guard let webView = webView else { return }
-
-        // Focus the input field
         focusInput()
-
-        return;
-        webView.evaluateJavaScript(checkConversationScript) { [weak self] result, _ in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                if let inConversation = result as? Bool, inConversation {
-                    // In conversation - ensure expanded
-                    if !self.isExpanded {
-                        self.expandToNormalSize()
-                    }
-                } else {
-                    // On start page - ensure initial size
-                    if self.isExpanded {
-                        self.resetToInitialSize()
-                    }
-                }
-            }
-        }
     }
 
     /// Focus the input field in the WebView
     func focusInput() {
-        guard let webView = webView else { return }
+        guard let webView = resolvedWebView() else { return }
         // Close Gemini's overlay sidebar (it opens over the chat in narrow windows), then focus the prompt.
-        let closeSidebar = ChatBarPanel.enterQuickChatScript
-        webView.evaluateJavaScript(closeSidebar, completionHandler: nil)
+        webView.evaluateJavaScript(ChatBarPanel.enterQuickChatScript, completionHandler: nil)
         webView.window?.makeFirstResponder(webView)
         webView.evaluateJavaScript(PromptInjector.focusInputScript, completionHandler: nil)
     }
 
     deinit {
-        pollingTimer?.invalidate()
         positionSaveWork?.cancel()
-        if let monitor = clickOutsideMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
+        sizeSaveWork?.cancel()
+        removeClickOutsideMonitor()
     }
 
     // MARK: - NSWindowDelegate
 
     func windowDidResize(_ notification: Notification) {
-        // Only persist size when in initial (non-expanded) state
-        guard !isExpanded else { return }
-
-        UserDefaults.standard.set(frame.width, forKey: UserDefaultsKeys.panelWidth.rawValue)
-        UserDefaults.standard.set(frame.height, forKey: UserDefaultsKeys.panelHeight.rawValue)
+        let size = frame.size
+        scheduleSave(&sizeSaveWork, delay: Constants.sizeSaveDebounce) {
+            UserDefaults.standard.set(size.width, forKey: UserDefaultsKeys.panelWidth.rawValue)
+            UserDefaults.standard.set(size.height, forKey: UserDefaultsKeys.panelHeight.rawValue)
+        }
     }
 
     func windowDidMove(_ notification: Notification) {
         guard PanelPosition.current == .rememberLast else { return }
-        positionSaveWork?.cancel()
         let origin = frame.origin
-        let work = DispatchWorkItem {
+        scheduleSave(&positionSaveWork, delay: Constants.positionSaveDebounce) {
             UserDefaults.standard.set(origin.x, forKey: UserDefaultsKeys.panelX.rawValue)
             UserDefaults.standard.set(origin.y, forKey: UserDefaultsKeys.panelY.rawValue)
         }
-        positionSaveWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.positionSaveDebounce, execute: work)
+    }
+
+    private func scheduleSave(_ workSlot: inout DispatchWorkItem?, delay: TimeInterval, save: @escaping () -> Void) {
+        workSlot?.cancel()
+        let work = DispatchWorkItem(block: save)
+        workSlot = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: - Keyboard Handling
@@ -283,21 +172,28 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
 
     /// Triggers a new chat by emulating Shift+Cmd+O (Google's shortcut)
     private func openNewChat() {
-        guard let webView = webView else { return }
+        guard let webView = resolvedWebView() else { return }
         PromptInjector.newChat(in: webView) { [weak self] in
-            // Reset to initial size since we're starting a new chat
             self?.focusInput()
         }
     }
 
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        super.makeKeyAndOrderFront(sender)
+        installClickOutsideMonitor()
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: self)
+    }
+
     override func orderOut(_ sender: Any?) {
+        removeClickOutsideMonitor()
         super.orderOut(sender)
         // Restore the normal layout for the main window (shared web view).
-        webView?.evaluateJavaScript(#"document.documentElement.classList.remove('gd-quickchat');"#, completionHandler: nil)
+        resolvedWebView()?.evaluateJavaScript(#"document.documentElement.classList.remove('gd-quickchat');"#, completionHandler: nil)
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: self)
     }
 
     /// Adds a compact-layout class (narrow reading column, no sidebar) and
-    /// force-closes Gemini's sidebar whatever mode it is in, retrying while the page settles.
+    /// force-closes Gemini's sidebar when open, retrying up to 5 times while open.
     static let enterQuickChatScript = #"""
     (function() {
         var root = document.documentElement;
@@ -322,14 +218,15 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
               html.gd-quickchat infinite-scroller { padding-left: 20px !important; padding-right: 20px !important; }
               html.gd-quickchat .cdk-overlay-backdrop.mat-drawer-backdrop,
               html.gd-quickchat .mat-drawer-backdrop.mat-drawer-shown { display: none !important; }`;
-            document.head.appendChild(st);
+            (document.head || document.documentElement).appendChild(st);
         }
         var tries = 0;
         (function closeNav() {
             var opened = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded');
+            if (!opened) { return; }
             var btn = document.querySelector('button[aria-label="Close sidebar"]');
-            if (opened && btn && btn.offsetParent !== null) { btn.click(); }
-            if (++tries < 8) { setTimeout(closeNav, 250); }
+            if (btn && btn.offsetParent !== null) { btn.click(); }
+            if (++tries < 5) { setTimeout(closeNav, 200); }
         })();
     })();
     """#
@@ -350,12 +247,7 @@ extension ChatBarPanel {
         static let maxHeight: CGFloat = 1400
         static let cornerRadius: CGFloat = 18
         static let borderWidth: CGFloat = 0.5
-        static let expandedScreenRatio: CGFloat = 0.7
-        static let animationDuration: Double = 0.3
-        static let pollingInterval: TimeInterval = 1.0
-        static let initialPollingDelay: TimeInterval = 3.0
-        static let webViewSearchDelay: TimeInterval = 0.5
-        static let topPadding: CGFloat = 20 // Padding from the top of the screen
         static let positionSaveDebounce: TimeInterval = 0.3
+        static let sizeSaveDebounce: TimeInterval = 0.3
     }
 }

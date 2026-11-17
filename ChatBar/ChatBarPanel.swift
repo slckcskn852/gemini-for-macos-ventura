@@ -308,11 +308,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
             st.textContent = `
               html.gd-quickchat .conversation-container,
               html.gd-quickchat user-query,
-              html.gd-quickchat model-response,
-              html.gd-quickchat .input-area-container,
-              html.gd-quickchat input-container,
-              html.gd-quickchat .zero-state-container,
-              html.gd-quickchat infinite-scroller > * {
+              html.gd-quickchat model-response {
                   max-width: 660px !important;
                   margin-left: auto !important;
                   margin-right: auto !important;

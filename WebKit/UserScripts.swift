@@ -60,11 +60,7 @@ enum UserScripts {
         st.textContent = `
           .conversation-container,
           user-query,
-          model-response,
-          .input-area-container,
-          input-container,
-          .zero-state-container,
-          infinite-scroller > * {
+          model-response {
               max-width: 760px !important;
               margin-left: auto !important;
               margin-right: auto !important;

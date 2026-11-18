@@ -70,7 +70,9 @@ enum UserScripts {
           chat-loading-animation, .nl-canvas, .nl-blob, .gradient-strip { display: none !important; animation: none !important; filter: none !important; }
           .mdc-circular-progress--closed .mdc-circular-progress__indeterminate-container, .mdc-circular-progress--closed .mdc-circular-progress__spinner-layer, .mdc-circular-progress--closed svg { animation: none !important; }
           .cdk-overlay-connected-position-bounding-box { pointer-events: none; }
+          .cdk-overlay-connected-position-bounding-box:has(.submenu-container) { z-index: 1002 !important; }
           .cdk-overlay-pane { pointer-events: auto; }
+          .popover-click-shield { pointer-events: none !important; }
           a[href*="gemini.google/mac"], a[aria-label="Get App" i], a[aria-label="Get the app" i], button[aria-label="Get App" i], button[aria-label="Get the app" i], [role="button"][aria-label="Get App" i], [role="menuitem"][aria-label="Get App" i] { display: none !important; }`;
         function inject() {
             if (document.getElementById('gd-core-style')) { return true; }
@@ -126,10 +128,9 @@ enum UserScripts {
             if (Date.now() - lastOutsidePointerDown < 250) { return; }
             var t = e.target;
             if (!(t instanceof Element)) { return; }
-            var menu = t.closest('gem-menu');
-            if (!menu) { return; }
-            if (menu.querySelector('gem-menu-item[aria-expanded="true"]') ||
-                document.querySelector('.cdk-overlay-container .submenu-container:not([style*="display: none"])')) {
+            var inMenuOrTrigger = t.closest('gem-menu, [data-gem-menu-trigger-id], .input-area-switch');
+            if (!inMenuOrTrigger) { return; }
+            if (document.querySelector('gem-menu-item[aria-expanded="true"], .cdk-overlay-container .submenu-container:not([style*="display: none"])')) {
                 e.stopImmediatePropagation();
             }
         }, true);

@@ -67,6 +67,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
     private func configureWindow() {
         isFloatingPanel = true
         level = .floating
+        hidesOnDeactivate = false
         isMovable = true
         isMovableByWindowBackground = false
 
@@ -81,6 +82,17 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         guard clickOutsideMonitor == nil else { return }
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
             guard let self = self, self.isVisible else { return }
+            let mouseLocation = NSEvent.mouseLocation
+            // Never dismiss if the click landed inside the panel (e.g. a WebKit popup,
+            // <select>, or NSMenu overlay) or inside any visible child/popup window.
+            if self.frame.contains(mouseLocation) { return }
+            if self.attachedSheet != nil { return }
+            if self.childWindows?.contains(where: { $0.isVisible }) == true { return }
+            if NSApp.windows.contains(where: { win in
+                win !== self && win.isVisible && win.frame.contains(mouseLocation)
+            }) {
+                return
+            }
             self.orderOut(nil)
         }
     }

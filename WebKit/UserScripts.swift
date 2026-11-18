@@ -17,6 +17,7 @@ enum UserScripts {
     static func createAllScripts() -> [WKUserScript] {
         var scripts: [WKUserScript] = [
             WKUserScript(source: coreStyleSource, injectionTime: .atDocumentStart, forMainFrameOnly: true),
+            WKUserScript(source: submenuFixSource, injectionTime: .atDocumentStart, forMainFrameOnly: true),
             createIMEFixScript(),
             WKUserScript(source: hideGetAppSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true),
             WKUserScript(source: responseWatcherSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
@@ -68,6 +69,8 @@ enum UserScripts {
           infinite-scroller { padding-left: 24px !important; padding-right: 24px !important; }
           chat-loading-animation, .nl-canvas, .nl-blob, .gradient-strip { display: none !important; animation: none !important; filter: none !important; }
           .mdc-circular-progress--closed .mdc-circular-progress__indeterminate-container, .mdc-circular-progress--closed .mdc-circular-progress__spinner-layer, .mdc-circular-progress--closed svg { animation: none !important; }
+          .cdk-overlay-connected-position-bounding-box { pointer-events: none; }
+          .cdk-overlay-pane { pointer-events: auto; }
           a[href*="gemini.google/mac"], a[aria-label="Get App" i], a[aria-label="Get the app" i], button[aria-label="Get App" i], button[aria-label="Get the app" i], [role="button"][aria-label="Get App" i], [role="menuitem"][aria-label="Get App" i] { display: none !important; }`;
         function inject() {
             if (document.getElementById('gd-core-style')) { return true; }
@@ -82,6 +85,54 @@ enum UserScripts {
         if (!inject()) {
             document.addEventListener('DOMContentLoaded', inject, { once: true });
         }
+    })();
+    """#
+
+    /// Fixes nested submenus (e.g. "Thinking level") on WebKit versions without the
+    /// HTML Popover API (macOS Ventura WebKit 18615 / Safari 16.6). When `showPopover`
+    /// is missing, Angular CDK falls back to rendering submenus as sibling overlays in
+    /// `.cdk-overlay-container` instead of inline descendants of `<gem-menu>`, causing
+    /// `ngMenu` focusout and `clickOutside` containment checks to prematurely close
+    /// the entire dropdown. Zero-cost on newer WebKit (no-ops immediately when
+    /// `HTMLElement.prototype.showPopover` exists), zero timers, zero observers.
+    private static let submenuFixSource = #"""
+    (function() {
+        'use strict';
+        if (typeof HTMLElement === 'undefined' || 'showPopover' in HTMLElement.prototype) { return; }
+
+        var origContains = Node.prototype.contains;
+        Node.prototype.contains = function(other) {
+            if (origContains.call(this, other)) { return true; }
+            if (!other || other.nodeType !== 1 || this.nodeType !== 1) { return false; }
+            var sub = other.closest && other.closest('.cdk-overlay-container .submenu-container');
+            if (!sub || sub.style.display === 'none' || origContains.call(sub, this)) { return false; }
+            if (this.closest && this.closest('.cdk-overlay-pane') &&
+                this.querySelector && this.querySelector('gem-menu-item[aria-expanded="true"]')) {
+                return true;
+            }
+            return false;
+        };
+
+        var lastOutsidePointerDown = 0;
+        document.addEventListener('pointerdown', function(e) {
+            var t = e.target;
+            if (t instanceof Element && !t.closest('.cdk-overlay-pane, [data-gem-menu-trigger-id], [aria-haspopup="true"]')) {
+                lastOutsidePointerDown = Date.now();
+            }
+        }, true);
+
+        document.addEventListener('focusout', function(e) {
+            if (e.relatedTarget !== null) { return; }
+            if (Date.now() - lastOutsidePointerDown < 250) { return; }
+            var t = e.target;
+            if (!(t instanceof Element)) { return; }
+            var menu = t.closest('gem-menu');
+            if (!menu) { return; }
+            if (menu.querySelector('gem-menu-item[aria-expanded="true"]') ||
+                document.querySelector('.cdk-overlay-container .submenu-container:not([style*="display: none"])')) {
+                e.stopImmediatePropagation();
+            }
+        }, true);
     })();
     """#
 

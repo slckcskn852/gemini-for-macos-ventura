@@ -190,7 +190,7 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: self)
     }
 
-    static let exitQuickChatScript = #"document.documentElement.classList.remove('gd-quickchat');"#
+    static let exitQuickChatScript = #"document.documentElement.classList.remove('gd-quickchat', 'gd-qc-hidenav');"#
 
     /// Adds a compact-layout class (narrow reading column, no sidebar) and
     /// force-closes Gemini's sidebar when open, retrying up to 6 times while open.
@@ -220,13 +220,42 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
               html.gd-quickchat .mat-drawer-backdrop.mat-drawer-shown { display: none !important; }`;
             (document.head || document.documentElement).appendChild(st);
         }
+        // Keep the sidebar/drawer invisible (and un-animated) while it is being closed,
+        // so its slide-out never shows after the transition cover lifts.
+        if (!document.getElementById('gd-qc-hidenav-style')) {
+            var hs = document.createElement('style');
+            hs.id = 'gd-qc-hidenav-style';
+            hs.textContent = 'html.gd-qc-hidenav mat-sidenav, html.gd-qc-hidenav .mat-drawer, html.gd-qc-hidenav bard-sidenav,' +
+              'html.gd-qc-hidenav side-navigation-v2, html.gd-qc-hidenav .mat-drawer-backdrop, html.gd-qc-hidenav .cdk-overlay-backdrop' +
+              '{ visibility: hidden !important; transition: none !important; animation: none !important; }';
+            (document.head || document.documentElement).appendChild(hs);
+        }
+        function navOnScreen() {
+            var els = document.querySelectorAll('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded, mat-sidenav, .mat-drawer');
+            for (var i = 0; i < els.length; i++) {
+                var r = els[i].getBoundingClientRect();
+                if (r.width > 40 && r.right > 40 && r.left < window.innerWidth - 40) { return true; }
+            }
+            return false;
+        }
+        function isOpened() {
+            return !!document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded');
+        }
+        if (!isOpened() && !navOnScreen()) { return; }
+        root.classList.add('gd-qc-hidenav');
         var tries = 0;
         (function closeNav() {
-            var opened = document.querySelector('mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded');
-            if (!opened) { return; }
-            var btn = document.querySelector('button[aria-label="Close sidebar"]');
-            if (btn) { btn.click(); }
-            if (++tries < 6) { setTimeout(closeNav, 60); }
+            if (!root.classList.contains('gd-quickchat')) { root.classList.remove('gd-qc-hidenav'); return; }
+            if (isOpened()) {
+                var btn = document.querySelector('button[aria-label="Close sidebar"]');
+                if (btn) { btn.click(); }
+            }
+            if ((!isOpened() && !navOnScreen()) || ++tries >= 20) {
+                // Reveal on the next frame, once the closed state has been painted.
+                requestAnimationFrame(function() { root.classList.remove('gd-qc-hidenav'); });
+                return;
+            }
+            setTimeout(closeNav, 50);
         })();
     })();
     """#

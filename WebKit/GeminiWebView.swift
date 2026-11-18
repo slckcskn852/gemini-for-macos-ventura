@@ -595,6 +595,8 @@ class WebViewContainer: NSView {
             var nr = navEls[n].getBoundingClientRect();
             if (nr.width > 40 && nr.right > 40 && nr.left < window.innerWidth - 40) { sidenavOpen = 1; break; }
         }
+        // Quick Chat is still closing the sidebar (hidden meanwhile): not settled yet.
+        if (document.documentElement.classList.contains('gd-qc-hidenav')) sidenavOpen = 1;
         var contentEl = document.querySelector('bard-sidenav-content') || document.querySelector('chat-window') || document.querySelector('input-container');
         var contentLeft = contentEl ? Math.round(contentEl.getBoundingClientRect().left) : -1;
         var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', '.zero-state-container', 'h1', '.suggestion-block-container'];

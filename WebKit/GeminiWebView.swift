@@ -7,6 +7,7 @@
 
 import SwiftUI
 import WebKit
+import CoreImage
 
 struct GeminiWebView: NSViewRepresentable {
     let webView: WKWebView
@@ -188,6 +189,7 @@ class WebViewContainer: NSView {
     private var lastBoundsSize: NSSize = .zero
     private var pendingAttachSourceSize: NSSize?
     private var unfreezeWorkItem: DispatchWorkItem?
+    private var stableSinceUptime: TimeInterval?
 
     private static let quickChatDarkBackgroundColor = NSColor(srgbRed: 13.0 / 255.0, green: 13.0 / 255.0, blue: 16.0 / 255.0, alpha: 1.0)
     private static let darkBackgroundColor = NSColor(srgbRed: 19.0 / 255.0, green: 19.0 / 255.0, blue: 20.0 / 255.0, alpha: 1.0)
@@ -283,6 +285,12 @@ class WebViewContainer: NSView {
         }
         if coverView.superview === self {
             coverView.frame = bounds
+            if !coverView.isHidden {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layoutSnapshotLayer()
+                CATransaction.commit()
+            }
         }
         if webView.superview === self {
             if inLiveResize {
@@ -302,15 +310,57 @@ class WebViewContainer: NSView {
         }
     }
 
+    /// Blurred snapshot of the outgoing layout, aspect-filled under a soft tint.
+    private lazy var snapshotLayer: CALayer = {
+        let l = CALayer()
+        l.contentsGravity = .resizeAspectFill
+        l.masksToBounds = true
+        l.isHidden = true
+        let tint = CALayer()
+        tint.name = "tint"
+        l.addSublayer(tint)
+        coverView.layer?.addSublayer(l)
+        return l
+    }()
+
+    private func applySnapshot(_ image: CGImage?) {
+        let l = snapshotLayer
+        guard let image = image else {
+            l.contents = nil
+            l.isHidden = true
+            return
+        }
+        l.frame = coverView.bounds
+        l.contents = image
+        if let tint = l.sublayers?.first(where: { $0.name == "tint" }) {
+            tint.frame = l.bounds
+            tint.backgroundColor = coverView.layer?.backgroundColor?.copy(alpha: 0.35)
+        }
+        l.isHidden = false
+    }
+
     private func showCoverImmediately() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         updateBackgroundColor()
         coverView.layer?.removeAllAnimations()
+        let freshCover = coverView.isHidden || coverView.alphaValue < 1.0
         coverView.frame = bounds
+        if freshCover {
+            // Fresh cover: use the hand-off snapshot if one was just captured.
+            applySnapshot(TransitionSnapshot.consume())
+        } else {
+            layoutSnapshotLayer()
+        }
         coverView.alphaValue = 1.0
         coverView.isHidden = false
         CATransaction.commit()
+    }
+
+    private func layoutSnapshotLayer() {
+        guard !snapshotLayer.isHidden else { return }
+        snapshotLayer.frame = coverView.bounds
+        snapshotLayer.sublayers?.forEach { $0.frame = snapshotLayer.bounds }
     }
 
     private func scheduleUnfreeze(after delay: TimeInterval) {
@@ -366,6 +416,7 @@ class WebViewContainer: NSView {
         unfreezeWorkItem = nil
         revealGeneration += 1
         let generation = revealGeneration
+        stableSinceUptime = nil
 
         showCoverImmediately()
         if coverView.superview !== self && webView.superview === self {
@@ -380,7 +431,7 @@ class WebViewContainer: NSView {
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.68, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: fallback)
 
         let startUptime = ProcessInfo.processInfo.systemUptime
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
@@ -422,6 +473,10 @@ class WebViewContainer: NSView {
             return (srcW >= 960 && expectedW < 960) || (srcW < 960 && expectedW >= 960)
         }()
 
+        // Synchronous measurements (getBoundingClientRect forces layout at the new viewport
+        // size) polled back-to-back; the breakpoint/sidebar/order checks catch Gemini's
+        // JS-driven responsive component swaps. In-page timers/rAF are throttled while the
+        // window is fading in, so waiting inside the page would only add latency.
         webView.evaluateJavaScript(Self.layoutSignatureScript) { [weak self] result, error in
             guard let self = self,
                   generation == self.revealGeneration,
@@ -433,7 +488,7 @@ class WebViewContainer: NSView {
             let stable: Int
 
             if error == nil, let signature = result as? String {
-                let parts = signature.split(separator: ",").prefix(4).compactMap {
+                let parts = signature.split(separator: ",").prefix(6).compactMap {
                     Double($0).map { Int($0.rounded()) }
                 }
                 let w = parts.count > 0 ? parts[0] : 0
@@ -442,19 +497,28 @@ class WebViewContainer: NSView {
                 let contentLeft = parts.count > 3 ? parts[3] : -1
 
                 let sizeMatched = parts.count >= 4 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
-                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 0.50
+                let orderOK = parts.count > 4 ? parts[4] == 1 : true
+                let pageVisible = parts.count > 5 ? parts[5] == 1 : true
+                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 1.0
                 let breakpointReady: Bool = {
                     guard crossesBreakpoint else { return true }
                     if expectedW < 960 {
-                        return (contentLeft >= 0 && contentLeft <= 12 && sidenavOpen == 0) || nowElapsed >= 0.50
+                        return (contentLeft >= 0 && contentLeft <= 12 && sidenavOpen == 0) || nowElapsed >= 1.0
                     } else {
-                        return (contentLeft >= 36) || nowElapsed >= 0.50
+                        return (contentLeft >= 36) || nowElapsed >= 1.0
                     }
                 }()
 
-                if sizeMatched && sidebarReady && breakpointReady && signature == lastSignature {
-                    stable = stableCount + 1
+                if sizeMatched && sidebarReady && breakpointReady && (orderOK || nowElapsed >= 1.0) && pageVisible && signature == lastSignature {
+                    // Identical measurements held for a short wall-clock window once the
+                    // page reports visible: catches the late header/placeholder updates
+                    // Gemini applies a beat after the main swap (its timers are throttled
+                    // until the page becomes visible again).
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if self.stableSinceUptime == nil { self.stableSinceUptime = now }
+                    stable = (now - (self.stableSinceUptime ?? now)) >= 0.12 ? 2 : 1
                 } else {
+                    self.stableSinceUptime = nil
                     stable = 0
                 }
                 nextSignature = signature
@@ -463,14 +527,14 @@ class WebViewContainer: NSView {
                 nextSignature = nil
             }
 
-            if stable >= 2 || nowElapsed >= 0.58 || attempt >= 22 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.020) { [weak self] in
-                    self?.revealIfNeeded(generation: generation)
-                }
+            // Under heavy system load layout can lag; only force a reveal well past the
+            // normal settle so an intermediate layout is never exposed.
+            if stable >= 2 || nowElapsed >= 1.4 || attempt >= 80 {
+                self.revealIfNeeded(generation: generation)
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
                 self?.pollUntilSettled(
                     generation: generation,
                     targetSize: targetSize,
@@ -497,12 +561,15 @@ class WebViewContainer: NSView {
 
     private func fadeInWebView(generation: Int) {
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.14
+            // Slightly longer dissolve when cross-fading from the blurred snapshot so it
+            // reads as a focus pull; flat covers keep the quick 0.14s fade.
+            ctx.duration = snapshotLayer.isHidden ? 0.14 : 0.2
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
             coverView.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             guard let self = self, generation == self.revealGeneration else { return }
             self.coverView.isHidden = true
+            self.applySnapshot(nil)   // release the bitmap
         })
     }
 
@@ -517,15 +584,36 @@ class WebViewContainer: NSView {
             }
         }
         var narrow = window.innerWidth < 960;
-        var sidenavOpen = document.querySelector(
+        // Only count a drawer that actually covers part of the viewport.
+        var navEls = document.querySelectorAll(
             narrow
                 ? 'mat-sidenav.mat-drawer-opened, .mat-drawer.mat-drawer-opened, bard-sidenav[expanded], side-navigation-v2 .expanded'
                 : 'mat-sidenav.mat-drawer-over.mat-drawer-opened, .mat-drawer-over.mat-drawer-opened'
-        ) ? 1 : 0;
+        );
+        var sidenavOpen = 0;
+        for (var n = 0; n < navEls.length; n++) {
+            var nr = navEls[n].getBoundingClientRect();
+            if (nr.width > 40 && nr.right > 40 && nr.left < window.innerWidth - 40) { sidenavOpen = 1; break; }
+        }
         var contentEl = document.querySelector('bard-sidenav-content') || document.querySelector('chat-window') || document.querySelector('input-container');
         var contentLeft = contentEl ? Math.round(contentEl.getBoundingClientRect().left) : -1;
         var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', '.zero-state-container', 'h1', '.suggestion-block-container'];
-        var out = [window.innerWidth, window.innerHeight, sidenavOpen, contentLeft];
+        // Gemini briefly renders the prompt box above the hero while it swaps
+        // responsive components; treat that as not settled.
+        var inp = document.querySelector('input-container');
+        // The zero-state greeting is the tallest visible heading.
+        var hero = null, heroH = 0;
+        var heads = document.querySelectorAll('h1, h2');
+        for (var hi = 0; hi < heads.length; hi++) {
+            var hh = heads[hi].getBoundingClientRect().height;
+            if (hh > heroH && hh >= 28) { heroH = hh; hero = heads[hi]; }
+        }
+        var orderOK = 1;
+        if (inp && hero) {
+            var ir = inp.getBoundingClientRect(), hr = hero.getBoundingClientRect();
+            if (ir.height > 0 && hr.height > 0 && ir.top < hr.top) orderOK = 0;
+        }
+        var out = [window.innerWidth, window.innerHeight, sidenavOpen, contentLeft, orderOK, document.hidden ? 0 : 1];
         for (var i = 0; i < sel.length; i++) {
             var el = document.querySelector(sel[i]);
             if (el) {
@@ -538,6 +626,7 @@ class WebViewContainer: NSView {
         return out.join(',');
     })();
     """#
+
 
     private static let unfreezeLayoutScript = #"""
     (function() {
@@ -586,4 +675,68 @@ extension GeminiWebView {
         static let trustedHost = "google.com"
     }
 
+}
+
+// MARK: - Transition snapshot
+//  One-shot, blurred snapshot of the web content taken right before the web view
+//  moves between Quick Chat and the main window. The receiving container shows it
+//  under its opaque cover so the hand-off reads as a soft "focus pull" (blurred old
+//  content dissolving into the sharp, fully laid-out page) instead of a blank flash.
+//  The page's responsive relayout always happens underneath and is never visible.
+//
+//  Cost: a single nominal-resolution capture of our own window plus a GPU blur at
+//  1/4 scale (~a few ms), only at transition time. Nothing runs while idle.
+//
+
+
+enum TransitionSnapshot {
+    private static var pending: (image: CGImage, time: TimeInterval)?
+    private static let maxAge: TimeInterval = 1.5
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
+    /// Captures `webView`'s on-screen pixels from its current window (ours, so no
+    /// Screen Recording permission is involved) and stores a blurred copy.
+    static func capture(webView: WKWebView) {
+        guard let window = webView.window,
+              window.isVisible,
+              window.occlusionState.contains(.visible),
+              window.windowNumber > 0,
+              webView.bounds.width > 10, webView.bounds.height > 10 else { return }
+
+        guard let raw = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            CGWindowID(window.windowNumber),
+            [.boundsIgnoreFraming, .nominalResolution]
+        ) else { return }
+
+        // Window-relative rect of the web view (bottom-left origin == Core Image space).
+        let scale = CGFloat(raw.width) / max(window.frame.width, 1)
+        let r = webView.convert(webView.bounds, to: nil)
+        let crop = CGRect(x: r.minX * scale, y: r.minY * scale,
+                          width: r.width * scale, height: r.height * scale)
+            .intersection(CGRect(x: 0, y: 0, width: raw.width, height: raw.height))
+        guard !crop.isEmpty else { return }
+
+        let downscale: CGFloat = 0.25
+        let image = CIImage(cgImage: raw)
+            .cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: downscale, y: downscale))
+        let extent = image.extent
+        let blurred = image
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: 9)
+            .cropped(to: extent)
+        guard let out = context.createCGImage(blurred, from: extent) else { return }
+        pending = (out, ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// Returns the pending snapshot (if still fresh) and clears it.
+    static func consume() -> CGImage? {
+        defer { pending = nil }
+        guard let p = pending,
+              ProcessInfo.processInfo.systemUptime - p.time <= maxAge else { return nil }
+        return p.image
+    }
 }

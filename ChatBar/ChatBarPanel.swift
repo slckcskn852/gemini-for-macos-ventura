@@ -99,9 +99,9 @@ class ChatBarPanel: NSPanel, NSWindowDelegate {
         if let contentView = contentView {
             contentView.wantsLayer = true
             contentView.layer?.cornerRadius = Constants.cornerRadius
+            contentView.layer?.cornerCurve = .continuous
             contentView.layer?.masksToBounds = true
-            contentView.layer?.borderWidth = Constants.borderWidth
-            contentView.layer?.borderColor = NSColor.separatorColor.cgColor
+            // The adaptive hairline is drawn in SwiftUI (ChatBarView) so it follows appearance.
         }
     }
 
@@ -245,7 +245,7 @@ extension ChatBarPanel {
         static let minHeight: CGFloat = 420
         static let maxWidth: CGFloat = 1400
         static let maxHeight: CGFloat = 1400
-        static let cornerRadius: CGFloat = 18
+        static let cornerRadius: CGFloat = 22
         static let borderWidth: CGFloat = 0.5
         static let positionSaveDebounce: TimeInterval = 0.3
         static let sizeSaveDebounce: TimeInterval = 0.3

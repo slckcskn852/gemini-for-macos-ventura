@@ -17,12 +17,13 @@ struct MainWindowView: View {
             GeminiWebView(webView: coordinator.webViewModel.wkWebView)
 
             if coordinator.webViewModel.isLoading {
-                ProgressView()
-                    .controlSize(.large)
+                LoadingSurface()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Self.loadingSurfaceColor)
+                    .transition(.opacity.animation(.easeOut(duration: 0.25)))
             }
         }
+            .background(WindowChromeConfigurator())
             .onAppear {
                 coordinator.openWindowAction = { id in
                     openWindow(id: id)
@@ -105,4 +106,42 @@ struct MainWindowView: View {
     private func minimizeToPrompt() {
         coordinator.showChatBar()
     }
+}
+
+/// A calm, branded loading state: the Gemini sparkle gently breathing.
+/// Only exists while the page is loading, so it costs nothing at idle.
+private struct LoadingSurface: View {
+    @State private var breathe = false
+
+    var body: some View {
+        Image(systemName: "sparkle")
+            .font(.system(size: 34, weight: .light))
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.61, green: 0.45, blue: 0.95), Color(red: 0.85, green: 0.42, blue: 0.55)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            )
+            .scaleEffect(breathe ? 1.0 : 0.86)
+            .opacity(breathe ? 1.0 : 0.55)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    breathe = true
+                }
+            }
+    }
+}
+
+/// Removes the hairline under the toolbar so it flows into Gemini's sidebar.
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.titlebarSeparatorStyle = .none
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

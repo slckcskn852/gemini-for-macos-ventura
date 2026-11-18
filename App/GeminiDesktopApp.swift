@@ -203,9 +203,10 @@ extension GeminiDesktopApp {
         // Appearance
         static let toolbarColor: NSColor = NSColor(name: nil) { appearance in
             if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                return NSColor(red: 43.0/255.0, green: 43.0/255.0, blue: 43.0/255.0, alpha: 1.0)
+                // Matches Gemini's sidebar surface so the toolbar flows into it seamlessly.
+                return NSColor(srgbRed: 30.0/255.0, green: 31.0/255.0, blue: 32.0/255.0, alpha: 1.0)
             } else {
-                return NSColor(red: 238.0/255.0, green: 241.0/255.0, blue: 247.0/255.0, alpha: 1.0)
+                return NSColor(srgbRed: 240.0/255.0, green: 244.0/255.0, blue: 249.0/255.0, alpha: 1.0)
             }
         }
         static let menuBarIcon = "sparkle"

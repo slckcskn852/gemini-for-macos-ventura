@@ -74,17 +74,20 @@ struct ChatBarView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             GeminiWebView(webView: webView)
+                .overlay(
+                    // Adaptive hairline + inner highlight for a crisp, glassy edge.
+                    RoundedRectangle(cornerRadius: ChatBarPanel.Constants.cornerRadius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                )
 
             // Expand button
             Button(action: onExpandToMain) {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 38, height: 38)
-                    .vibrantButtonChrome(in: Circle())
-                    .contentShape(Circle())
+                    .font(.system(size: 13, weight: .semibold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GlassIconButtonStyle(shape: Circle(), size: CGSize(width: 36, height: 36)))
+            .help("Expand to Window")
             .padding(16)
             .offset(buttonOffset)
 
@@ -118,6 +121,7 @@ struct ChatBarView: View {
 /// context-sharing controls of Google's official Mac app.
 struct ContextMenuButton: View {
     let coordinator: AppCoordinator
+    @State private var hovering = false
 
     var body: some View {
         Menu {
@@ -144,14 +148,14 @@ struct ContextMenuButton: View {
             }
         } label: {
             Image(systemName: "plus.viewfinder")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 13, weight: .semibold))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .vibrantButtonChrome(in: Capsule())
+        .frame(width: 36, height: 36)
+        .glassChrome(in: Circle(), hovering: hovering)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
         .help("Share your screen or talk to Gemini")
     }
 
@@ -164,10 +168,46 @@ struct ContextMenuButton: View {
 }
 
 private extension View {
-    /// Applies macOS `.ultraThinMaterial` vibrancy with a subtle hairline border.
-    func vibrantButtonChrome<S: InsettableShape>(in shape: S) -> some View {
+    /// macOS `.ultraThinMaterial` vibrancy with an adaptive hairline and a soft top
+    /// highlight. Static unless hovered, so it adds no ongoing render cost.
+    func glassChrome<S: InsettableShape>(in shape: S, hovering: Bool = false, pressed: Bool = false) -> some View {
         self
+            .foregroundStyle(hovering ? Color.primary : Color.secondary)
             .background(.ultraThinMaterial, in: shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+            .overlay(shape.fill(Color.primary.opacity(pressed ? 0.12 : (hovering ? 0.06 : 0))))
+            .overlay(
+                shape.strokeBorder(
+                    LinearGradient(colors: [Color.white.opacity(0.22), Color.primary.opacity(0.10)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 0.5
+                )
+            )
+            .contentShape(shape)
+            .scaleEffect(pressed ? 0.94 : 1.0)
+    }
+}
+
+/// Icon button with glass chrome, hover brighten and a springy press.
+struct GlassIconButtonStyle<S: InsettableShape>: ButtonStyle {
+    let shape: S
+    let size: CGSize
+
+    func makeBody(configuration: Configuration) -> some View {
+        GlassIconButtonBody(configuration: configuration, shape: shape, size: size)
+    }
+
+    private struct GlassIconButtonBody: View {
+        let configuration: Configuration
+        let shape: S
+        let size: CGSize
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .frame(width: size.width, height: size.height)
+                .glassChrome(in: shape, hovering: hovering, pressed: configuration.isPressed)
+                .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
+                .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
+        }
     }
 }

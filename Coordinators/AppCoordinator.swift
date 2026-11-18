@@ -269,6 +269,7 @@ final class AppCoordinator: ObservableObject {
 
         let alreadyInChatBar = chatBar?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
         if !alreadyInChatBar {
+            TransitionSnapshot.capture(webView: webViewModel.wkWebView)
             webViewModel.wkWebView.evaluateJavaScript(
                 WebViewContainer.freezeLayoutScript + ChatBarPanel.enterQuickChatScript,
                 completionHandler: nil
@@ -417,6 +418,7 @@ final class AppCoordinator: ObservableObject {
             return NSScreen.screen(containing: center)
         } ?? NSScreen.main
 
+        TransitionSnapshot.capture(webView: webViewModel.wkWebView)
         hideChatBar()
         openMainWindow(on: targetScreen)
     }
@@ -428,6 +430,7 @@ final class AppCoordinator: ObservableObject {
         let mainWindow = findMainWindow()
         let alreadyInMain = mainWindow?.contentView.map { webViewModel.wkWebView.isDescendant(of: $0) } ?? false
         if !alreadyInMain {
+            TransitionSnapshot.capture(webView: webViewModel.wkWebView)
             webViewModel.wkWebView.evaluateJavaScript(
                 WebViewContainer.freezeLayoutScript + ChatBarPanel.exitQuickChatScript,
                 completionHandler: nil

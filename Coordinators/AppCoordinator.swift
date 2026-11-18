@@ -291,7 +291,7 @@ final class AppCoordinator: ObservableObject {
             if bar.isVisible && !wasHiding {
                 bar.makeKeyAndOrderFront(nil)
             } else {
-                animateIn(bar, offset: 10, duration: 0.22)
+                animateIn(bar, offset: 10, duration: 0.15)
             }
             bar.checkAndAdjustSize()
             return
@@ -312,7 +312,7 @@ final class AppCoordinator: ObservableObject {
 
         NSApp.activate(ignoringOtherApps: true)
         chatBar = bar
-        animateIn(bar, offset: 10, duration: 0.22)
+        animateIn(bar, offset: 10, duration: 0.15)
         DispatchQueue.main.async { bar.checkAndAdjustSize() }
     }
 
@@ -464,7 +464,7 @@ final class AppCoordinator: ObservableObject {
             if window.isVisible {
                 window.makeKeyAndOrderFront(nil)
             } else {
-                animateIn(window, offset: 0, duration: 0.18)
+                animateIn(window, offset: 0, duration: 0.12)
             }
         } else if let openWindowAction = openWindowAction {
             // Window doesn't exist yet - use SwiftUI openWindow to create it

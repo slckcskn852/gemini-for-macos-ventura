@@ -431,10 +431,10 @@ class WebViewContainer: NSView {
             self?.revealIfNeeded(generation: generation)
         }
         revealFallbackWorkItem = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: fallback)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: fallback)
 
         let startUptime = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) { [weak self] in
             self?.pollUntilSettled(
                 generation: generation,
                 targetSize: targetSize,
@@ -499,24 +499,24 @@ class WebViewContainer: NSView {
                 let sizeMatched = parts.count >= 4 && abs(w - expectedW) <= 12 && abs(h - expectedH) <= 12
                 let orderOK = parts.count > 4 ? parts[4] == 1 : true
                 let pageVisible = parts.count > 5 ? parts[5] == 1 : true
-                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 1.0
+                let sidebarReady = !(self.window is NSPanel) || sidenavOpen == 0 || nowElapsed >= 0.65
                 let breakpointReady: Bool = {
                     guard crossesBreakpoint else { return true }
                     if expectedW < 960 {
-                        return (contentLeft >= 0 && contentLeft <= 12 && sidenavOpen == 0) || nowElapsed >= 1.0
+                        return (contentLeft >= 0 && contentLeft <= 12 && sidenavOpen == 0) || nowElapsed >= 0.65
                     } else {
-                        return (contentLeft >= 36) || nowElapsed >= 1.0
+                        return (contentLeft >= 36) || nowElapsed >= 0.65
                     }
                 }()
 
-                if sizeMatched && sidebarReady && breakpointReady && (orderOK || nowElapsed >= 1.0) && pageVisible && signature == lastSignature {
+                if sizeMatched && sidebarReady && breakpointReady && (orderOK || nowElapsed >= 0.65) && pageVisible && signature == lastSignature {
                     // Identical measurements held for a short wall-clock window once the
                     // page reports visible: catches the late header/placeholder updates
                     // Gemini applies a beat after the main swap (its timers are throttled
                     // until the page becomes visible again).
                     let now = ProcessInfo.processInfo.systemUptime
                     if self.stableSinceUptime == nil { self.stableSinceUptime = now }
-                    stable = (now - (self.stableSinceUptime ?? now)) >= 0.12 ? 2 : 1
+                    stable = (now - (self.stableSinceUptime ?? now)) >= 0.045 ? 2 : 1
                 } else {
                     self.stableSinceUptime = nil
                     stable = 0
@@ -529,12 +529,12 @@ class WebViewContainer: NSView {
 
             // Under heavy system load layout can lag; only force a reveal well past the
             // normal settle so an intermediate layout is never exposed.
-            if stable >= 2 || nowElapsed >= 1.4 || attempt >= 80 {
+            if stable >= 2 || nowElapsed >= 0.85 || attempt >= 50 {
                 self.revealIfNeeded(generation: generation)
                 return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
                 self?.pollUntilSettled(
                     generation: generation,
                     targetSize: targetSize,
@@ -562,8 +562,8 @@ class WebViewContainer: NSView {
     private func fadeInWebView(generation: Int) {
         NSAnimationContext.runAnimationGroup({ ctx in
             // Slightly longer dissolve when cross-fading from the blurred snapshot so it
-            // reads as a focus pull; flat covers keep the quick 0.14s fade.
-            ctx.duration = snapshotLayer.isHidden ? 0.14 : 0.2
+            // reads as a focus pull; flat covers keep the quick 0.10s fade.
+            ctx.duration = snapshotLayer.isHidden ? 0.10 : 0.14
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
             coverView.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
@@ -583,6 +583,7 @@ class WebViewContainer: NSView {
                 try { anim.finish(); } catch (e) {}
             }
         }
+        if (window.__gdQCNavStep) { try { window.__gdQCNavStep(); } catch (e) {} }
         var narrow = window.innerWidth < 960;
         // Only count a drawer that actually covers part of the viewport.
         var navEls = document.querySelectorAll(
@@ -595,8 +596,10 @@ class WebViewContainer: NSView {
             var nr = navEls[n].getBoundingClientRect();
             if (nr.width > 40 && nr.right > 40 && nr.left < window.innerWidth - 40) { sidenavOpen = 1; break; }
         }
-        // Quick Chat is still closing the sidebar (hidden meanwhile): not settled yet.
-        if (document.documentElement.classList.contains('gd-qc-hidenav')) sidenavOpen = 1;
+        // In Quick Chat the drawer is invisible unless the user opened it, so an
+        // auto-opened (hidden) drawer doesn't hold the reveal.
+        var rc = document.documentElement.classList;
+        if (rc.contains('gd-quickchat') && !rc.contains('gd-qc-usernav')) sidenavOpen = 0;
         var contentEl = document.querySelector('bard-sidenav-content') || document.querySelector('chat-window') || document.querySelector('input-container');
         var contentLeft = contentEl ? Math.round(contentEl.getBoundingClientRect().left) : -1;
         var sel = ['input-container', '.input-area-container', 'rich-textarea', 'bard-mode-switcher', 'chat-window', '.conversation-container', 'bard-sidenav', 'side-navigation-v2', '.zero-state-container', 'h1', '.suggestion-block-container'];

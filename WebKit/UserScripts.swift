@@ -66,14 +66,32 @@ enum UserScripts {
               margin-right: auto !important;
               box-sizing: border-box !important;
           }
+          user-query,
+          model-response {
+              content-visibility: auto;
+              contain-intrinsic-size: auto 120px;
+          }
           infinite-scroller { padding-left: 24px !important; padding-right: 24px !important; }
+          *, *::before, *::after {
+              backdrop-filter: none !important;
+              -webkit-backdrop-filter: none !important;
+          }
+          .mat-ripple, .mat-ripple-element, .mat-mdc-button-ripple, .mdc-button__ripple, .mdc-icon-button__ripple {
+              display: none !important;
+          }
+          .lm-fade-in-up-animation, .fade-in-animation, .fade-in,
+          message-content, model-response, user-query,
+          bard-sidenav, side-navigation-v2, .conversation-items-container,
+          .mat-mdc-menu-panel, gem-menu, gem-menu-item,
+          .cdk-overlay-pane, .cdk-overlay-backdrop {
+              animation-duration: 0.001ms !important;
+              animation-delay: 0s !important;
+              transition-duration: 0.001ms !important;
+              transition-delay: 0s !important;
+          }
           chat-loading-animation, .nl-canvas, .nl-blob, .gradient-strip { display: none !important; animation: none !important; filter: none !important; }
           .mdc-circular-progress--closed .mdc-circular-progress__indeterminate-container, .mdc-circular-progress--closed .mdc-circular-progress__spinner-layer, .mdc-circular-progress--closed svg { animation: none !important; }
-          .cdk-overlay-connected-position-bounding-box { pointer-events: none; }
-          .cdk-overlay-connected-position-bounding-box:has(.submenu-container) { z-index: 1002 !important; }
-          .cdk-overlay-pane { pointer-events: auto; }
-          .popover-click-shield { pointer-events: none !important; }
-          a[href*="gemini.google/mac"], a[aria-label="Get App" i], a[aria-label="Get the app" i], button[aria-label="Get App" i], button[aria-label="Get the app" i], [role="button"][aria-label="Get App" i], [role="menuitem"][aria-label="Get App" i] { display: none !important; }`;
+          desktop-get-app-button, a[href*="gemini.google/mac"], a[aria-label="Get App" i], a[aria-label="Get the app" i], button[aria-label="Get App" i], button[aria-label="Get the app" i], [role="button"][aria-label="Get App" i], [role="menuitem"][aria-label="Get App" i] { display: none !important; }`;
         function inject() {
             if (document.getElementById('gd-core-style')) { return true; }
             var target = document.head || document.documentElement;
@@ -90,17 +108,87 @@ enum UserScripts {
     })();
     """#
 
-    /// Fixes nested submenus (e.g. "Thinking level") on WebKit versions without the
-    /// HTML Popover API (macOS Ventura WebKit 18615 / Safari 16.6). When `showPopover`
-    /// is missing, Angular CDK falls back to rendering submenus as sibling overlays in
-    /// `.cdk-overlay-container` instead of inline descendants of `<gem-menu>`, causing
-    /// `ngMenu` focusout and `clickOutside` containment checks to prematurely close
-    /// the entire dropdown. Zero-cost on newer WebKit (no-ops immediately when
-    /// `HTMLElement.prototype.showPopover` exists), zero timers, zero observers.
+    /// Fixes nested submenus (e.g. "Thinking level") across WebKit versions with zero
+    /// MutationObservers and zero idle timers:
+    /// - Modern WebKit (macOS 26 / Safari 27+): when `showPopover` is supported, WebKit
+    ///   can leave `.cdk-overlay-popover.cdk-overlay-connected-position-bounding-box` laid
+    ///   out at full viewport `(0, 0)` after inline positioning updates. A bounded `350ms`
+    ///   `requestAnimationFrame` watch on `gem-menu-item` interaction checks a
+    ///   self-healing width guard and forces a one-shot `display` reflow only when
+    ///   mismatched (covering `ngMenu`'s 100ms hover open delay with zero idle cost).
+    /// - Legacy WebKit (macOS Ventura 18615 / Safari 16.6): when `showPopover` is missing,
+    ///   Angular CDK falls back to rendering submenus as sibling overlays in
+    ///   `.cdk-overlay-container` instead of inline descendants of `<gem-menu>`, causing
+    ///   `ngMenu` focusout and `clickOutside` containment checks to prematurely close
+    ///   the entire dropdown.
     private static let submenuFixSource = #"""
     (function() {
         'use strict';
-        if (typeof HTMLElement === 'undefined' || 'showPopover' in HTMLElement.prototype) { return; }
+        if (typeof HTMLElement === 'undefined') { return; }
+
+        if ('showPopover' in HTMLElement.prototype) {
+            var rafId = null;
+            var watchUntil = 0;
+            function fixPopoverSubmenus(now) {
+                rafId = null;
+                var scs = document.querySelectorAll('.submenu-container');
+                for (var i = 0; i < scs.length; i++) {
+                    var sc = scs[i];
+                    if (sc.style.display === 'none') { continue; }
+                    var box = sc.closest('.cdk-overlay-popover.cdk-overlay-connected-position-bounding-box');
+                    if (!box || !box.matches(':popover-open')) { continue; }
+                    var expectedWidth = parseFloat(box.style.width);
+                    if (!(expectedWidth > 0) || expectedWidth >= window.innerWidth - 2) { continue; }
+                    if (box.getBoundingClientRect().width >= window.innerWidth - 2) {
+                        var prevDisplay = box.style.display;
+                        box.style.display = 'none';
+                        void box.offsetHeight;
+                        box.style.display = prevDisplay;
+                    }
+                }
+                if (now < watchUntil) {
+                    rafId = requestAnimationFrame(fixPopoverSubmenus);
+                }
+            }
+            function startWatch() {
+                watchUntil = performance.now() + 350;
+                if (rafId === null) {
+                    rafId = requestAnimationFrame(fixPopoverSubmenus);
+                }
+            }
+            function onMenuInteraction(e) {
+                var t = e.target;
+                if (!(t instanceof Element) || !t.closest('gem-menu-item')) { return; }
+                startWatch();
+            }
+            document.addEventListener('mouseover', onMenuInteraction, true);
+            document.addEventListener('click', onMenuInteraction, true);
+            document.addEventListener('keydown', onMenuInteraction, true);
+            window.addEventListener('resize', function() {
+                if (document.querySelector('.submenu-container:not([style*="display: none"])')) {
+                    startWatch();
+                }
+            }, { passive: true });
+            return;
+        }
+
+        function injectLegacyOverlayStyle() {
+            if (document.getElementById('gd-legacy-overlay-style')) { return true; }
+            var target = document.head || document.documentElement;
+            if (!target) { return false; }
+            var st = document.createElement('style');
+            st.id = 'gd-legacy-overlay-style';
+            st.textContent =
+                '.cdk-overlay-connected-position-bounding-box { pointer-events: none; }' +
+                '.cdk-overlay-connected-position-bounding-box:has(.submenu-container) { z-index: 1002 !important; }' +
+                '.cdk-overlay-pane { pointer-events: auto; }' +
+                '.popover-click-shield { pointer-events: none !important; }';
+            target.appendChild(st);
+            return true;
+        }
+        if (!injectLegacyOverlayStyle()) {
+            document.addEventListener('DOMContentLoaded', injectLegacyOverlayStyle, { once: true });
+        }
 
         var origContains = Node.prototype.contains;
         Node.prototype.contains = function(other) {
@@ -138,12 +226,14 @@ enum UserScripts {
     """#
 
     /// Hides Gemini's "Get App" promo buttons — we already are the app.
+    /// Uses targeted scans after hydration and navigation/menu clicks instead of a
+    /// full-document MutationObserver so streaming tokens trigger zero JS work.
     private static let hideGetAppSource = #"""
     (function() {
         'use strict';
         const CANDIDATE_SELECTOR = 'a, button, [role="button"], [role="menuitem"]';
         const SKIP_TEXT_SELECTOR = 'mat-icon, svg, style, script, [aria-hidden="true"]';
-        const STREAMING_SKIP_SELECTOR = 'message-content, model-response, user-query';
+        const PROMO_CONTAINERS = 'bard-sidenav, side-navigation-v2, mat-sidenav, .cdk-overlay-container, header, top-bar-actions, desktop-get-app-button';
 
         function cleanText(el) {
             const walker = document.createTreeWalker(
@@ -185,77 +275,39 @@ enum UserScripts {
             }
         }
 
-        document.querySelectorAll(CANDIDATE_SELECTOR).forEach(checkCandidate);
-
-        const pending = new Set();
-        let flushTimer = null;
-
-        function flushPending() {
-            flushTimer = null;
-            pending.forEach(checkCandidate);
-            pending.clear();
+        function scan(scope) {
+            const root = scope || document;
+            root.querySelectorAll(CANDIDATE_SELECTOR).forEach(checkCandidate);
         }
 
-        function scheduleFlush() {
-            if (flushTimer !== null) {
-                clearTimeout(flushTimer);
-            }
-            flushTimer = setTimeout(flushPending, 150);
+        function scanPromoContainers() {
+            document.querySelectorAll(PROMO_CONTAINERS).forEach(scan);
         }
 
-        function collectNode(node) {
-            if (node.nodeType === 1) {
-                let found = false;
-                if (node.matches(CANDIDATE_SELECTOR)) {
-                    pending.add(node);
-                    found = true;
-                }
-                const nested = node.querySelectorAll(CANDIDATE_SELECTOR);
-                for (let i = 0; i < nested.length; i++) {
-                    pending.add(nested[i]);
-                    found = true;
-                }
-                return found;
-            }
-            if (node.nodeType === 3) {
-                const parent = node.parentElement;
-                const candidate = parent && parent.closest(CANDIDATE_SELECTOR);
-                if (candidate) {
-                    pending.add(candidate);
-                    return true;
-                }
-            }
-            return false;
-        }
+        scan(document);
+        setTimeout(function() { scan(document); }, 1500);
+        setTimeout(function() { scan(document); }, 4000);
 
-        const root = document.documentElement;
-        if (!root) { return; }
-        new MutationObserver(function(mutations) {
-            let touched = false;
-            for (let i = 0; i < mutations.length; i++) {
-                const m = mutations[i];
-                const target = m.target;
-                const targetEl = target.nodeType === 1 ? target : target.parentElement;
-                if (targetEl && targetEl.closest && targetEl.closest(STREAMING_SKIP_SELECTOR)) {
-                    continue;
-                }
-                const added = m.addedNodes;
-                for (let j = 0; j < added.length; j++) {
-                    if (collectNode(added[j])) {
-                        touched = true;
-                    }
-                }
+        let clickTimer = null;
+        document.addEventListener('click', function(e) {
+            const t = e.target;
+            if (!(t instanceof Element)) { return; }
+            if (!t.closest('bard-sidenav, side-navigation-v2, button[aria-label*="menu" i], button[aria-label*="sidebar" i], button[aria-label*="settings" i]')) {
+                return;
             }
-            if (touched) {
-                scheduleFlush();
-            }
-        }).observe(root, { childList: true, subtree: true });
+            if (clickTimer !== null) { clearTimeout(clickTimer); }
+            clickTimer = setTimeout(function() {
+                clickTimer = null;
+                scanPromoContainers();
+            }, 250);
+        }, true);
     })();
     """#
 
     /// Watches for Gemini finishing a response (the "Stop response" button
     /// disappearing) and tells the native side so it can post a notification.
-    /// Runs zero timers when idle; only polls while a response is actively streaming.
+    /// Zero MutationObservers and zero idle timers; only probes briefly after
+    /// Enter/click and polls while a response is actively streaming.
     private static let responseWatcherSource = #"""
     (function() {
         'use strict';
@@ -264,7 +316,7 @@ enum UserScripts {
 
         let generating = false;
         let pollTimer = null;
-        let throttleTimer = null;
+        let probeTimers = [];
 
         function isGenerating() {
             return !!document.querySelector(
@@ -280,10 +332,18 @@ enum UserScripts {
             return text.length > 180 ? text.slice(0, 177) + '…' : text;
         }
 
+        function clearProbes() {
+            for (let i = 0; i < probeTimers.length; i++) {
+                clearTimeout(probeTimers[i]);
+            }
+            probeTimers = [];
+        }
+
         function checkState() {
             const now = isGenerating();
             if (now && !generating) {
                 generating = true;
+                clearProbes();
                 if (pollTimer === null) {
                     pollTimer = setInterval(checkState, 800);
                 }
@@ -303,11 +363,10 @@ enum UserScripts {
         }
 
         function scheduleCheck() {
-            if (generating || throttleTimer !== null) { return; }
-            throttleTimer = setTimeout(function() {
-                throttleTimer = null;
-                checkState();
-            }, 400);
+            if (generating) { return; }
+            clearProbes();
+            probeTimers.push(setTimeout(checkState, 400));
+            probeTimers.push(setTimeout(checkState, 1200));
         }
 
         document.addEventListener('keydown', function(e) {
@@ -319,11 +378,6 @@ enum UserScripts {
         document.addEventListener('click', function() {
             scheduleCheck();
         }, true);
-
-        const root = document.body || document.documentElement;
-        if (root) {
-            new MutationObserver(scheduleCheck).observe(root, { childList: true, subtree: true });
-        }
 
         checkState();
     })();

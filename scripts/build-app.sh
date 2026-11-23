@@ -66,7 +66,7 @@ mkdir -p "$OBJ_DIR"
 BINARIES=()
 for arch in "${ARCHS[@]}"; do
     out="$OBJ_DIR/$EXECUTABLE-$arch"
-    echo "    compiling for $arch…"
+    echo "    compiling for ${arch}…"
     xcrun swiftc "${SWIFT_FLAGS[@]}" \
         -parse-as-library \
         -module-name "$EXECUTABLE" \

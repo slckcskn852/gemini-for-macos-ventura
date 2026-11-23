@@ -30,15 +30,15 @@ struct MainWindowView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        coordinator.goBack()
-                    } label: {
-                        Image(systemName: "chevron.left")
+                if coordinator.canGoBack {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            coordinator.goBack()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .help("Back")
                     }
-                    .help("Back")
-                    .opacity(coordinator.canGoBack ? 1 : 0)
-                    .disabled(!coordinator.canGoBack)
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -77,6 +77,15 @@ struct MainWindowView: View {
                         Image(systemName: "square.and.pencil")
                     }
                     .help("New Chat (⌘N)")
+                }
+
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        coordinator.reload()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Refresh (⌘R)")
                 }
 
                 ToolbarItem(placement: .navigation) {
